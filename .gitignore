@@ -1,0 +1,27 @@
+# Dependencies
+tests/bats/
+tests/bats-support/
+tests/bats-assert/
+
+# Cache
+.cache/
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key

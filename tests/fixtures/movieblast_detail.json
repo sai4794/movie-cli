@@ -1,0 +1,62 @@
+{
+  "id": 875,
+  "name": "Inception",
+  "original_name": "Inception",
+  "poster_path": "http://image.tmdb.org/t/p/w500/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
+  "backdrop_path": "http://image.tmdb.org/t/p/w500/zSBVQIvx4UIHoFf1oDvixHyIQrz.jpg",
+  "backdrop_path_tv": null,
+  "vote_average": 8.4,
+  "overview": "Cobb, a skilled thief...",
+  "release_date": "2010-07-16",
+  "genres": [
+    {"id": 878, "name": "Science Fiction"},
+    {"id": 12, "name": "Adventure"},
+    {"id": 53, "name": "Thriller"}
+  ],
+  "videos": [
+    {
+      "id": 1898,
+      "movie_id": 875,
+      "server": "720P",
+      "header": null,
+      "useragent": null,
+      "link": "mblinkmove.mycdn-mb.xyz/fp4hwo000cd5",
+      "lang": "English",
+      "video_name": null,
+      "hd": 0,
+      "embed": 0,
+      "youtubelink": 0,
+      "hls": 0,
+      "supported_hosts": 0,
+      "downloadonly": 0,
+      "drm": 0,
+      "drmuuid": null,
+      "drmlicenceuri": null,
+      "status": 1,
+      "created_at": "2024-07-22T18:00:41.000000Z",
+      "updated_at": "2024-07-22T18:00:41.000000Z"
+    },
+    {
+      "id": 1899,
+      "movie_id": 875,
+      "server": "1080P",
+      "header": null,
+      "useragent": null,
+      "link": "mblinkmove.mycdn-mb.xyz/fp4hwo000s9x",
+      "lang": "English",
+      "video_name": null,
+      "hd": 1,
+      "embed": 0,
+      "youtubelink": 0,
+      "hls": 0,
+      "supported_hosts": 0,
+      "downloadonly": 0,
+      "drm": 0,
+      "drmuuid": null,
+      "drmlicenceuri": null,
+      "status": 1,
+      "created_at": "2024-07-22T18:00:41.000000Z",
+      "updated_at": "2024-07-22T18:00:41.000000Z"
+    }
+  ]
+}

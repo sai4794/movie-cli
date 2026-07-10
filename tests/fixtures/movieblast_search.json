@@ -1,0 +1,46 @@
+{
+  "search": [
+    {
+      "id": 875,
+      "name": "Inception",
+      "original_name": "Inception",
+      "poster_path": "http://image.tmdb.org/t/p/w500/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
+      "backdrop_path": "http://image.tmdb.org/t/p/w500/zSBVQIvx4UIHoFf1oDvixHyIQrz.jpg",
+      "backdrop_path_tv": null,
+      "vote_average": 8.4,
+      "subtitle": null,
+      "overview": "Cobb, a skilled thief who commits corporate espionage...",
+      "release_date": "2010-07-16",
+      "pinned": null,
+      "created_at": "2024-07-22T18:00:41.000000Z",
+      "updated_at": "2024-07-22T18:00:41.000000Z",
+      "views": 15000,
+      "type": "movie",
+      "genre_name": "Sci-Fi",
+      "recent_views": 500,
+      "content_type": null,
+      "match_score": 0.95
+    },
+    {
+      "id": 876,
+      "name": "Inception",
+      "original_name": "Inception",
+      "poster_path": "http://image.tmdb.org/t/p/w500/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
+      "backdrop_path": null,
+      "backdrop_path_tv": null,
+      "vote_average": 7.8,
+      "subtitle": null,
+      "overview": "Another version of Inception",
+      "release_date": "2010-07-16",
+      "pinned": null,
+      "created_at": "2024-07-22T18:00:41.000000Z",
+      "updated_at": "2024-07-22T18:00:41.000000Z",
+      "views": 8000,
+      "type": "movie",
+      "genre_name": "Thriller",
+      "recent_views": 200,
+      "content_type": null,
+      "match_score": 0.85
+    }
+  ]
+}

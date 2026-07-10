@@ -1,0 +1,680 @@
+#!/usr/bin/env bash
+# movie-cli — Terminal-based movie/series search and play tool
+# Version: 0.1.0
+# License: MIT
+
+set -euo pipefail
+
+# ═══════════════════════════════════════════════════════════════
+# Find script directory and load libraries
+# ═══════════════════════════════════════════════════════════════
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+
+source "$LIB_DIR/init.sh"
+source "$LIB_DIR/errors.sh"
+source "$LIB_DIR/config.sh"
+source "$LIB_DIR/cache.sh"
+source "$LIB_DIR/ui.sh"
+source "$LIB_DIR/player.sh"
+source "$LIB_DIR/history.sh"
+
+# ═══════════════════════════════════════════════════════════════
+# Plugin System
+# ═══════════════════════════════════════════════════════════════
+PLUGIN_DIR="$SCRIPT_DIR/plugins"
+declare -A LOADED_PLUGINS=()
+
+validate_plugin() {
+    local file="$1"
+    # Validate without sourcing - parse file for required metadata
+    # This avoids the subshell-vs-main-shell execution difference vulnerability
+    local content
+    content=$(cat "$file" 2>/dev/null) || return 1
+    
+    # Check PLUGIN_NAME is defined (non-empty, not just commented)
+    printf '%s' "$content" | grep -qE '^PLUGIN_NAME="[^"]+"' || return 1
+    
+    # Check PLUGIN_API_VERSION is defined
+    printf '%s' "$content" | grep -qE '^PLUGIN_API_VERSION="[^"]+"' || return 1
+    
+    # Check plugin_search function exists
+    printf '%s' "$content" | grep -qE '^plugin_search\(\)' || return 1
+    
+    # Check plugin_get_url function exists
+    printf '%s' "$content" | grep -qE '^plugin_get_url\(\)' || return 1
+    
+    # Extract and check API version (simple grep for major version)
+    local version
+    version=$(printf '%s' "$content" | grep -oE '^PLUGIN_API_VERSION="([0-9]+)' | head -1 | cut -d'"' -f2)
+    [[ -n "$version" ]] || return 1
+    [[ "$version" == "$HOST_API_VERSION" ]] || return 1
+    
+    return 0
+}
+
+load_plugin() {
+    local file="$1"
+    local name
+    name=$(basename "$file" .sh)
+    [[ -n "${LOADED_PLUGINS[$name]:-}" ]] && return 0
+    if validate_plugin "$file"; then
+        LOADED_PLUGINS["$name"]="$file"
+    fi
+}
+
+discover_plugins() {
+    for dir in "$PLUGIN_DIR" "$CONF_DIR/plugins"; do
+        [[ -d "$dir" ]] || continue
+        for plugin in "$dir"/*.sh; do
+            [[ -f "$plugin" ]] || continue
+            [[ "$(basename "$plugin")" == "_template.sh" ]] && continue
+            load_plugin "$plugin" || true
+        done
+    done
+}
+
+list_plugins() {
+    discover_plugins
+    for name in "${!LOADED_PLUGINS[@]}"; do
+        printf '%s\n' "$name"
+    done | sort
+}
+
+sort_streams() {
+    local json="$1"
+    printf '%s' "$json" | jq -c '
+        def quality_rank:
+            if (.quality == "4K" or .quality == "2160p") then 0
+            elif (.quality == "2K" or .quality == "1440p") then 1
+            elif (.quality == "1080" or .quality == "1080p") then 2
+            elif (.quality == "720" or .quality == "720p") then 3
+            elif (.quality == "480" or .quality == "480p") then 4
+            elif (.quality == "360" or .quality == "360p") then 5
+            elif (.quality == "240" or .quality == "240p") then 6
+            elif (.quality == "144" or .quality == "144p") then 7
+            elif .quality == "auto" then 8
+            else 9
+            end;
+        sort_by(quality_rank)
+    ' 2>/dev/null || printf '%s' "$json"
+}
+
+# Verify streams — real playback check (follow redirects + referer)
+# Args: $1=JSON array of stream objects
+# Returns filtered JSON with only streams mpv can actually play
+verify_streams() {
+    local json="$1"
+    [[ -z "$json" || "$json" == "[]" ]] && { printf '[]'; return; }
+
+    local total
+    total=$(printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0)
+    (( total <= 1 )) && { printf '%s' "$json"; return; }
+
+    # ponytail: sequential, parallel if >20 streams
+    # ponytail: -L follows redirects like mpv does, Referer bypasses CDN 403
+    local indices=""
+    local i=0
+    while (( i < total )); do
+        local url
+        url=$(printf '%s' "$json" | jq -r ".[$i].url // empty" 2>/dev/null)
+        if [[ -n "$url" ]]; then
+            local http_code curl_exit=0
+            http_code=$(curl -so /dev/null -w "%{http_code}" \
+                -L --connect-timeout 4 --max-time 8 \
+                -H "Referer: https://vidlink.pro/" \
+                "$url" 2>/dev/null) || curl_exit=$?
+            [[ "$curl_exit" -ne 0 ]] && http_code="000"
+            if [[ "$http_code" =~ ^(200|206)$ ]]; then
+                indices+="$i "
+            fi
+        fi
+        (( ++i ))
+    done
+
+    local result="[]"
+    for idx in $indices; do
+        local item
+        item=$(printf '%s' "$json" | jq ".[$idx]" 2>/dev/null)
+        result=$(printf '%s' "$result" | jq --argjson item "$item" '. + [$item]' 2>/dev/null)
+    done
+
+    local kept
+    kept=$(printf '%s' "$result" | jq 'length' 2>/dev/null || echo 0)
+    local dropped=$(( total - kept ))
+    (( dropped > 0 )) && ui_info "Filtered $dropped dead stream(s), $kept working"
+    printf '%s' "$result"
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# Dependency Check
+# ═══════════════════════════════════════════════════════════════
+check_deps() {
+    local missing=()
+    for cmd in curl jq openssl python3; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    local player_found=0
+    for cmd in mpv vlc iina; do
+        command -v "$cmd" &>/dev/null && player_found=1
+    done
+    (( player_found == 0 )) && missing+=("mpv/vlc/iina")
+
+    if (( ${#missing[@]} > 0 )); then
+        ui_error "Missing: ${missing[*]}"
+        exit 5
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# Search & Play Pipeline
+# ═══════════════════════════════════════════════════════════════
+search_and_play() {
+    local query="$1"
+    local plugin_name="$2"
+    local quality="$3"
+
+    discover_plugins
+
+    local selected_plugin="${plugin_name:-${CONF_PLUGIN:-all}}"
+    if [[ "$selected_plugin" == "auto" ]]; then
+        selected_plugin="all"
+    fi
+
+    local results=""
+    if [[ "$selected_plugin" == "all" ]]; then
+        local cache_key="search|all|${query}|${quality}"
+        if [[ "${NO_CACHE:-0}" != "1" ]]; then
+            results=$(cache_get "$cache_key" "$CACHE_TTL_SEARCH" 2>/dev/null) || true
+        fi
+        if [[ -z "$results" || "$results" == "[]" ]]; then
+            status_msg "Searching all plugins..."
+            local merged_results="[]"
+            for p_name in "${!LOADED_PLUGINS[@]}"; do
+                source "${LOADED_PLUGINS[$p_name]}"
+                local p_res
+                p_res=$(plugin_search "$query" "$quality" 2>/dev/null || printf '[]')
+                if [[ -n "$p_res" && "$p_res" != "[]" ]]; then
+                    p_res=$(printf '%s' "$p_res" | jq --arg p "$p_name" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
+                    merged_results=$(printf '%s\n%s' "$merged_results" "$p_res" | jq -s 'add' 2>/dev/null || printf '[]')
+                fi
+            done
+            results="$merged_results"
+            spinner_stop
+            [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
+            [[ "${NO_CACHE:-0}" != "1" ]] && cache_set "$cache_key" "$results"
+        fi
+    else
+        [[ -n "${LOADED_PLUGINS[$selected_plugin]:-}" ]] || die_plugin "Plugin not found: $selected_plugin"
+        source "${LOADED_PLUGINS[$selected_plugin]}"
+        local cache_key="search|${selected_plugin}|${query}|${quality}"
+        if [[ "${NO_CACHE:-0}" != "1" ]]; then
+            results=$(cache_get "$cache_key" "$CACHE_TTL_SEARCH" 2>/dev/null) || true
+        fi
+        if [[ -z "$results" ]]; then
+            status_msg "Searching..."
+            results=$(plugin_search "$query" "$quality" || printf '[]')
+            spinner_stop
+            [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
+            results=$(printf '%s' "$results" | jq --arg p "$selected_plugin" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
+            [[ "${NO_CACHE:-0}" != "1" ]] && cache_set "$cache_key" "$results"
+        fi
+    fi
+
+    local count
+    count=$(printf '%s' "$results" | jq 'length' 2>/dev/null || echo 0)
+    ui_success "Found $count results"
+    (( count == 0 )) && die_plugin "No results for: $query"
+
+    local -a titles=() ids=() types=() plugins=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && titles+=("$line")
+    done < <(printf '%s' "$results" | jq -r '.[].title' 2>/dev/null || true)
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && ids+=("$line")
+    done < <(printf '%s' "$results" | jq -r '.[].id' 2>/dev/null || true)
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && types+=("$line")
+    done < <(printf '%s' "$results" | jq -r '.[].type' 2>/dev/null || true)
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && plugins+=("$line")
+    done < <(printf '%s' "$results" | jq -r '.[].plugin' 2>/dev/null || true)
+
+    local -a display_titles=()
+    local i=0
+    while (( i < count )); do
+        if [[ "$selected_plugin" == "all" ]]; then
+            display_titles+=("${titles[$i]} [${plugins[$i]}]")
+        else
+            display_titles+=("${titles[$i]}")
+        fi
+        i=$((i + 1))
+    done
+
+    # If search-only, print results and exit
+    if [[ "${SEARCH_ONLY:-0}" == "1" ]]; then
+        local idx=1
+        for d_title in "${display_titles[@]}"; do
+            printf '%d. %s\n' "$idx" "$d_title"
+            idx=$((idx + 1))
+        done
+        exit 0
+    fi
+
+    local selected_display
+    select_item "Select: " "${display_titles[@]}" || exit 130
+    selected_display="$_SELECT_ITEM_RESULT"
+    SELECT_N=""
+
+    local selected_id="" selected_type="" selected_plugin_match="" selected_title=""
+    i=0
+    while (( i < count )); do
+        if [[ "${display_titles[$i]}" == "$selected_display" ]]; then
+            selected_id="${ids[$i]}"
+            selected_type="${types[$i]:-movie}"
+            selected_plugin_match="${plugins[$i]}"
+            selected_title="${titles[$i]}"
+            break
+        fi
+        i=$((i + 1))
+    done
+    [[ -n "$selected_id" ]] || die_plugin "No ID for selection"
+
+    # Source the selected plugin once for all subsequent calls
+    unset -f plugin_search plugin_get_url plugin_list_seasons plugin_list_episodes \
+             plugin_list_languages plugin_get_url_for_language plugin_init \
+             plugin_cleanup plugin_health plugin_info plugin_sign_url || true
+    unset PLUGIN_NAME PLUGIN_VERSION PLUGIN_API_VERSION PLUGIN_TYPES PLUGIN_REQUIRES \
+          PLUGIN_AUTHOR PLUGIN_DESCRIPTION || true
+    source "${LOADED_PLUGINS[$selected_plugin_match]}"
+
+    # Series playback flow
+    if [[ "$selected_type" == "series" ]]; then
+        # 1. Get seasons
+        status_msg "Fetching seasons..."
+        local seasons
+        seasons=$(plugin_list_seasons "$selected_id" 2>/dev/null) || seasons="[]"
+        spinner_stop
+
+        local -a season_titles=() season_ids=() season_numbers=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && season_titles+=("$line")
+        done < <(printf '%s' "$seasons" | jq -r '.[].title' 2>/dev/null)
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && season_ids+=("$line")
+        done < <(printf '%s' "$seasons" | jq -r '.[].id' 2>/dev/null)
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && season_numbers+=("$line")
+        done < <(printf '%s' "$seasons" | jq -r '.[].number' 2>/dev/null)
+
+        local season_count=${#season_ids[@]}
+        local selected_season_number="1"
+
+        if (( season_count > 0 )); then
+            local selected_season_title
+            if (( season_count == 1 )); then
+                selected_season_title="${season_titles[0]}"
+            else
+                select_item "Select season: " "${season_titles[@]}" || exit 130
+            selected_season_title="$_SELECT_ITEM_RESULT"
+            fi
+
+            # Get the season number
+            local k=0
+            for t in "${season_titles[@]}"; do
+                if [[ "$t" == "$selected_season_title" ]]; then
+                    selected_season_number="${season_numbers[$k]}"
+                    break
+                fi
+                (( ++k ))
+            done
+        fi
+
+        # 2. Get episodes
+        status_msg "Fetching episodes..."
+        local episodes
+        episodes=$(plugin_list_episodes "$selected_id" "$selected_season_number" 2>/dev/null) || episodes="[]"
+        spinner_stop
+
+        local -a episode_titles=() episode_ids=() episode_seasons=() episode_numbers=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && episode_titles+=("$line")
+        done < <(printf '%s' "$episodes" | jq -r '.[].title' 2>/dev/null)
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && episode_ids+=("$line")
+        done < <(printf '%s' "$episodes" | jq -r '.[].id' 2>/dev/null)
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && episode_seasons+=("$line")
+        done < <(printf '%s' "$episodes" | jq -r '.[].season' 2>/dev/null)
+
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && episode_numbers+=("$line")
+        done < <(printf '%s' "$episodes" | jq -r '.[].episode' 2>/dev/null)
+
+        local ep_count=${#episode_ids[@]}
+        (( ep_count == 0 )) && die_plugin "No episodes found for season $selected_season_number"
+
+        # 3. Select episode
+        local selected_episode_title
+        select_item "Select episode: " "${episode_titles[@]}" || exit 130
+        selected_episode_title="$_SELECT_ITEM_RESULT"
+
+        local ep_idx=""
+        local k=0
+        for t in "${episode_titles[@]}"; do
+            if [[ "$t" == "$selected_episode_title" ]]; then
+                ep_idx=$k
+                break
+            fi
+            (( ++k ))
+        done
+        [[ -n "$ep_idx" ]] || die_plugin "No episode index found"
+
+        # 4. Playback loop
+        while true; do
+            local ep_title="${episode_titles[$ep_idx]}"
+            local ep_id="${episode_ids[$ep_idx]}"
+            local ep_num="${episode_numbers[$ep_idx]}"
+            local ep_season="${episode_seasons[$ep_idx]}"
+
+            # Clear screen before resolving streams
+            clear 2>/dev/null || true
+
+            status_msg "Resolving streams..."
+            qualities_json=$(plugin_get_url "$ep_id" "$quality" 2>/dev/null)
+            qualities_json=$(sort_streams "$qualities_json")
+                        spinner_stop
+            [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for: $selected_title - $ep_title"
+
+            # Stream selection for series episodes
+            local -a ep_streams=()
+            while IFS= read -r obj; do
+                [[ -n "$obj" ]] && ep_streams+=("$obj")
+            done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
+
+            (( ${#ep_streams[@]} == 0 )) && die_plugin "No streams for: $selected_title - $ep_title"
+
+            local selected_stream
+            select_stream "Select stream: " "${ep_streams[@]}" || die_plugin "No stream selected"
+            selected_stream="$_SELECT_ITEM_RESULT"
+
+            local video_url
+            video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+            [[ -z "$video_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
+
+            # Re-sign URL at playback time
+            if declare -f plugin_sign_url >/dev/null 2>&1; then
+                    video_url=$(plugin_sign_url "$video_url")
+            fi
+
+            history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
+            status_msg "Playing: $selected_title - $ep_title (S${ep_season}E${ep_num})"
+
+            # Attached playback for series menu navigation
+            local saved_no_detach="$NO_DETACH"
+            NO_DETACH=1
+            play_video "$video_url"
+            NO_DETACH="$saved_no_detach"
+            # ponytail: save final position for --continue
+            local end_pos
+            end_pos=$(get_mpv_position 2>/dev/null || echo 0)
+            (( end_pos > 0 )) && history_update_progress "$ep_id" "$end_pos" "$end_pos"
+
+            # Clear screen to wipe player output and print clean menu
+            clear 2>/dev/null || true
+
+            # Prompt choices
+            local options=("next" "replay" "previous" "select" "change quality" "quit")
+            local choice
+            select_item "Select option: " "${options[@]}" || choice="quit"
+            choice="$_SELECT_ITEM_RESULT"
+
+            case "$choice" in
+                next)
+                    if (( ep_idx + 1 < ep_count )); then
+                        ep_idx=$((ep_idx + 1))
+                    else
+                        ui_info "No more episodes in this season."
+                    fi
+                    ;;
+                previous)
+                    if (( ep_idx > 0 )); then
+                        ep_idx=$((ep_idx - 1))
+                    else
+                        ui_info "Already at the first episode."
+                    fi
+                    ;;
+                replay)
+                    # Replays current ep_idx
+                    ;;
+                select)
+                    local new_ep_title
+                    select_item "Select episode: " "${episode_titles[@]}" || exit 130
+                    new_ep_title="$_SELECT_ITEM_RESULT"
+                    local m=0
+                    for t in "${episode_titles[@]}"; do
+                        if [[ "$t" == "$new_ep_title" ]]; then
+                            ep_idx=$m
+                            break
+                        fi
+                        (( ++m ))
+                    done
+                    ;;
+                "change quality")
+                    local changed_stream
+                    select_stream "Select quality: " "${ep_streams[@]}" || continue
+                    changed_stream="$_SELECT_ITEM_RESULT"
+                    quality=$(printf '%s' "$changed_stream" | jq -r '.quality // "auto"' 2>/dev/null)
+                    ;;
+                quit)
+                    break
+                    ;;
+            esac
+        done
+        exit 0
+    fi
+
+    # Movie playback flow
+    status_msg "Resolving streams..."
+    local qualities_json
+    qualities_json=$(plugin_get_url "$selected_id" "$quality")
+    qualities_json=$(sort_streams "$qualities_json")
+        spinner_stop
+
+    [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No video URL for: $selected_title"
+
+    # Stream selection: extract individual stream objects from JSON array
+    local -a streams=()
+    while IFS= read -r obj; do
+        [[ -n "$obj" ]] && streams+=("$obj")
+    done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
+
+    (( ${#streams[@]} == 0 )) && die_plugin "No streams for: $selected_title"
+
+    # Select stream (auto-plays if only one)
+    local selected_stream
+    select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
+    selected_stream="$_SELECT_ITEM_RESULT"
+
+    local video_url
+    video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+    [[ -z "$video_url" ]] && die_plugin "No video URL for: $selected_title"
+
+    # Re-sign URL at playback time (some plugins sign URLs that expire)
+    if declare -f plugin_sign_url >/dev/null 2>&1; then
+            video_url=$(plugin_sign_url "$video_url")
+    fi
+
+    history_add "$selected_title" "$selected_plugin_match" "$selected_id" "movie"
+    status_msg "Playing: $selected_title"
+    local saved_no_detach="$NO_DETACH"
+    NO_DETACH=1
+    play_video "$video_url"
+    NO_DETACH="$saved_no_detach"
+    # ponytail: save final position for --continue
+    local end_pos
+    end_pos=$(get_mpv_position 2>/dev/null || echo 0)
+    (( end_pos > 0 )) && history_update_progress "$selected_id" "$end_pos" "$end_pos"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# Main — handle immediate-exit flags BEFORE any subshell
+# ═══════════════════════════════════════════════════════════════
+main() {
+    init_dirs
+    create_default_config
+    load_all_config
+
+    # Handle flags that must exit the REAL process (not a subshell)
+    for arg in "$@"; do
+        case "$arg" in
+            -v|--version)  show_version; exit 0 ;;
+            -h|--help)     show_help; exit 0 ;;
+            --clear-cache) cache_clear; ui_success "Cache cleared."; exit 0 ;;
+        esac
+    done
+
+    check_deps
+
+    # Parse remaining args (no subshell!)
+    local query="" plugin="" quality="$CONF_QUALITY"
+    local select_n=""
+    local search_only=0 log_view=0
+    local delete_history=0 list_plugins_flag=0 continue_watch=0
+
+    while (( $# > 0 )); do
+        case "$1" in
+            -p|--plugin)
+                [[ $# -ge 2 ]] || die_user "Option $1 requires an argument"
+                plugin="$2"; shift 2 ;;
+            -q|--quality)
+                [[ $# -ge 2 ]] || die_user "Option $1 requires an argument"
+                quality="$2"; shift 2 ;;
+            -s|--search-only) search_only=1; shift ;;
+            -S|--select)
+                [[ $# -ge 2 ]] || die_user "Option $1 requires an argument"
+                [[ "$2" =~ ^[0-9]+$ ]] || die_user "Invalid $1 value: $2 (must be a number)"
+                select_n="$2"; shift 2
+                ;;
+            --no-detach)     NO_DETACH=1; shift ;;
+            -l|--log)        log_view=1; shift ;;
+            -D|--delete-history) delete_history=1; shift ;;
+            -c|--continue)   continue_watch=1; shift ;;
+            -u|--update)     die_user "Self-update not yet implemented" ;;
+            --list-plugins)  list_plugins_flag=1; shift ;;
+            --check-deps)    check_deps; ui_success "All dependencies OK."; exit 0 ;;
+            --debug)         DEBUG=1; VERBOSE=1; shift ;;
+            --quiet)         QUIET=1; shift ;;
+            --no-color)      NO_COLOR=1; shift ;;
+            --no-cache)      NO_CACHE=1; shift ;;
+            -*)              die_user "Unknown option: $1" ;;
+            *)               query="$1"; shift ;;
+        esac
+    done
+
+    # Handle non-search commands
+    if (( list_plugins_flag )); then list_plugins; exit 0; fi
+    if (( log_view )); then history_list 20; exit 0; fi
+    if (( delete_history )); then
+        confirm "Delete all watch history?" && history_clear && ui_success "History cleared."
+        exit 0
+    fi
+
+    # Continue watching last entry
+    if (( continue_watch )); then
+        local last_entry
+        last_entry=$(history_get_last) || die_user "No watch history found"
+        local last_id last_type last_plugin last_season last_episode last_progress
+        last_id=$(printf '%s' "$last_entry" | jq -r '.id // empty')
+        last_type=$(printf '%s' "$last_entry" | jq -r '.type // "movie"')
+        last_plugin=$(printf '%s' "$last_entry" | jq -r '.plugin // empty')
+        last_season=$(printf '%s' "$last_entry" | jq -r '.season // "null"')
+        last_episode=$(printf '%s' "$last_entry" | jq -r '.episode // "null"')
+        last_progress=$(printf '%s' "$last_entry" | jq -r '.progress // 0')
+
+        [[ -n "$last_id" ]] || die_user "No valid entry in history"
+
+        # Re-resolve URL via plugin
+        discover_plugins
+        [[ -n "${LOADED_PLUGINS[$last_plugin]:-}" ]] || die_plugin "Plugin '$last_plugin' not found"
+        source "${LOADED_PLUGINS[$last_plugin]}"
+
+        local resume_id="$last_id"
+        if [[ "$last_type" == "series" && "$last_season" != "null" && "$last_episode" != "null" ]]; then
+            resume_id="${last_id}:${last_season}:${last_episode}"
+        fi
+
+        status_msg "Resolving streams..."
+        local qualities_json
+        qualities_json=$(plugin_get_url "$resume_id" "$quality")
+        qualities_json=$(sort_streams "$qualities_json")
+        spinner_stop
+        [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for last watched entry"
+
+        local -a streams=()
+        while IFS= read -r obj; do
+            [[ -n "$obj" ]] && streams+=("$obj")
+        done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
+
+        (( ${#streams[@]} == 0 )) && die_plugin "No streams available"
+
+        local selected_stream
+        select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
+        selected_stream="$_SELECT_ITEM_RESULT"
+
+        local video_url
+        video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+        [[ -z "$video_url" ]] && die_plugin "No video URL"
+
+        if declare -f plugin_sign_url >/dev/null 2>&1; then
+            video_url=$(plugin_sign_url "$video_url")
+        fi
+
+        local start_time=""
+        (( last_progress > 0 )) && start_time="$last_progress"
+
+        status_msg "Resuming: $(printf '%s' "$last_entry" | jq -r '.title')"
+        play_video "$video_url" "$start_time"
+        # ponytail: save position for next --continue
+        local end_pos
+        end_pos=$(get_mpv_position 2>/dev/null || echo 0)
+        (( end_pos > 0 )) && history_update_progress "$last_id" "$end_pos" "$end_pos"
+        exit 0
+    fi
+
+    # If no query is passed, run interactively to prompt the user (ani-cli workflow)
+    if [[ -z "$query" ]]; then
+        status_msg "Checking dependencies..."
+        check_deps
+        printf "${C_CYAN}Search movie:${C_RESET} "
+        if [[ -t 0 ]]; then
+            read -r query < /dev/tty
+        else
+            read -r query
+        fi
+    fi
+
+    # Require query and validate (Security constraints)
+    [[ -n "$query" ]] || die_user "Query cannot be empty"
+    (( ${#query} <= 200 )) || die_user "Query is too long (max: 200 characters)"
+    query=$(printf '%s' "$query" | tr -cd '[:alnum:][:space:]._-')
+    [[ -n "$query" ]] || die_user "Query contains invalid characters"
+
+    # Re-initialize colors after CLI flags are parsed (--no-color may have been set)
+    init_colors
+
+    # Export for child processes
+    export SELECT_N="$select_n" SEARCH_ONLY="$search_only" NO_DETACH="${NO_DETACH:-0}"
+
+    search_and_play "$query" "$plugin" "$quality"
+}
+
+main "$@"
