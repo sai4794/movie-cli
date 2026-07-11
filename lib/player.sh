@@ -80,7 +80,8 @@ LUAEOF
                 am start --user 0 -a android.intent.action.VIEW \
                     -d "$url" -n is.xyz.mpv/.MPVActivity \
                     >/dev/null 2>&1 || _am_rc=$?
-                debug "am start exit: $_am_rc"
+                # ponytail: unconditional (debug is silent without --debug)
+                printf "[movie-cli] am start exit: %d\n" "$_am_rc" >&2
                 [[ "$_am_rc" -eq 0 ]] && return 0
                 warn "mpv-android not found. Install from Play Store for headed playback."
             fi
