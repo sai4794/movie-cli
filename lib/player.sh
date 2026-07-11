@@ -76,11 +76,12 @@ LUAEOF
             [[ -n "$referrer" ]] && cmd+=("--referrer=$referrer")
             # ponytail: Termux — mpv-android via intent, then fallback
             if [[ -d "/data/data/com.termux" ]]; then
-                if am start --user 0 -a android.intent.action.VIEW \
+                local _am_rc=0
+                am start --user 0 -a android.intent.action.VIEW \
                     -d "$url" -n is.xyz.mpv/.MPVActivity \
-                     2>&1; then
-                    return 0
-                fi
+                    >/dev/null 2>&1 || _am_rc=$?
+                debug "am start exit: $_am_rc"
+                [[ "$_am_rc" -eq 0 ]] && return 0
                 warn "mpv-android not found. Install from Play Store for headed playback."
             fi
             cmd+=("$url")
