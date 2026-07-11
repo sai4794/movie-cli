@@ -78,7 +78,7 @@ LUAEOF
             if [[ -d "/data/data/com.termux" ]]; then
                 if am start --user 0 -a android.intent.action.VIEW \
                     -d "$url" -n is.xyz.mpv/.MPVActivity \
-                     >/dev/null 2>&1; then
+                     2>&1; then
                     return 0
                 fi
                 warn "mpv-android not found. Install from Play Store for headed playback."
