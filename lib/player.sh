@@ -74,6 +74,8 @@ LUAEOF
             [[ -n "$start_time" ]] && cmd+=(--start=$start_time)
             [[ "${NO_DETACH:-0}" == "1" ]] && cmd+=("--no-terminal")
             [[ -n "$referrer" ]] && cmd+=("--referrer=$referrer")
+            # ponytail: Termux has no display server, use android vo
+            [[ -d "/data/data/com.termux" ]] && cmd+=(--vo=android)
             cmd+=("$url")
             ;;
         vlc)
