@@ -7,13 +7,13 @@ set -euo pipefail
 # ponytail: bash 4+ required (macOS ships 3.2)
 if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
     if [[ "$(uname)" == "Darwin" ]] && command -v brew &>/dev/null; then
-        info "Installing bash 5 (you have $BASH_VERSION)..."
+        echo "[movie-cli] Installing bash 5 (you have $BASH_VERSION)..."
         brew install bash
         hash -r
         exec bash "$0" "$@"
     else
-        error "movie-cli requires bash 4+ (you have $BASH_VERSION)"
-        error "Install: brew install bash  (macOS) or apt install bash (Linux)"
+        echo "[movie-cli] ERROR: movie-cli requires bash 4+ (you have $BASH_VERSION)" >&2
+        echo "[movie-cli] Install: brew install bash  (macOS) or apt install bash (Linux)" >&2
         exit 1
     fi
 fi
