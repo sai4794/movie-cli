@@ -74,14 +74,12 @@ LUAEOF
             [[ -n "$start_time" ]] && cmd+=(--start=$start_time)
             [[ "${NO_DETACH:-0}" == "1" ]] && cmd+=("--no-terminal")
             [[ -n "$referrer" ]] && cmd+=("--referrer=$referrer")
-            # ponytail: Termux — try mpv-android via intent, fallback to terminal mpv
+            # ponytail: Termux — mpv-android via intent, then fallback
             if [[ -d "/data/data/com.termux" ]]; then
-                if am start --user 0 -a android.intent.action.VIEW \
+                am start --user 0 -a android.intent.action.VIEW \
                     -d "$url" -n is.xyz.mpv/.MPVActivity \
-                    -e "title" "movie-cli" >/dev/null 2>&1; then
-                    return 0
-                fi
-                warn "mpv-android not found. Install from Play Store/F-Droid for headed playback."
+                    -e "title" "movie-cli" >/dev/null 2>&1 && return 0
+                warn "mpv-android not found. Install from Play Store for headed playback."
             fi
             cmd+=("$url")
             ;;
