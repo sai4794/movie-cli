@@ -10,7 +10,14 @@ if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
         echo "[movie-cli] Installing bash 5 (you have $BASH_VERSION)..."
         brew install bash
         hash -r
-        exec bash "$0" "$@"
+        # Re-exec with brew bash if available (avoids curl|bash stdin issue)
+        if [[ -x "/opt/homebrew/bin/bash" ]]; then
+            exec /opt/homebrew/bin/bash "$0" "$@"
+        elif command -v bash &>/dev/null && [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+            exec bash "$0" "$@"
+        fi
+        echo "[movie-cli] WARNING: bash installed but not in PATH. Run: hash -r && bash $0"
+        exit 1
     else
         echo "[movie-cli] ERROR: movie-cli requires bash 4+ (you have $BASH_VERSION)" >&2
         echo "[movie-cli] Install: brew install bash  (macOS) or apt install bash (Linux)" >&2
