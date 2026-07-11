@@ -4,6 +4,20 @@
 
 set -euo pipefail
 
+# ponytail: bash 4+ required (macOS ships 3.2)
+if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
+    if [[ "$(uname)" == "Darwin" ]] && command -v brew &>/dev/null; then
+        info "Installing bash 5 (you have $BASH_VERSION)..."
+        brew install bash
+        hash -r
+        exec bash "$0" "$@"
+    else
+        error "movie-cli requires bash 4+ (you have $BASH_VERSION)"
+        error "Install: brew install bash  (macOS) or apt install bash (Linux)"
+        exit 1
+    fi
+fi
+
 REPO_URL="https://github.com/sai4794/movie-cli"
 INSTALL_DIR="${HOME}/.local/bin"
 SHARE_DIR="${HOME}/.local/share/movie-cli"
@@ -60,7 +74,25 @@ install_deps() {
         apt)    sudo apt-get update -qq && sudo apt-get install -y -qq "${to_install[@]}" ;;
         dnf)    sudo dnf install -y -q "${to_install[@]}" ;;
         pacman) sudo pacman -S --noconfirm "${to_install[@]}" ;;
-        brew)   brew install "${to_install[@]}" ;;
+        brew)
+            # ponytail: mpv needs full Xcode on macOS, not just CLT
+            local brew_list=() need_mpv=0
+            for dep in "${to_install[@]}"; do
+                [[ "$dep" == "mpv" ]] && { need_mpv=1; continue; }
+                brew_list+=("$dep")
+            done
+            (( ${#brew_list[@]} > 0 )) && brew install "${brew_list[@]}"
+            if (( need_mpv )); then
+                if xcode-select -p &>/dev/null && [[ -d "/Applications/Xcode.app" ]]; then
+                    brew install mpv
+                elif xcode-select -p &>/dev/null; then
+                    warn "mpv needs full Xcode.app (not just CLT)."
+                    warn "Install Xcode from App Store, then: brew install mpv"
+                else
+                    warn "mpv needs Xcode. Install from App Store, then: brew install mpv"
+                fi
+            fi
+            ;;
         pkg)    pkg install -y "${to_install[@]}" ;;
     esac
 }
