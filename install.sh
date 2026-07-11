@@ -112,7 +112,6 @@ main() {
 
     # Download and extract
     local tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT
 
     info "Downloading..."
     curl -fsSL "$REPO_URL/archive/refs/heads/main.tar.gz" -o "$tmp_dir/release.tar.gz"
@@ -159,6 +158,9 @@ main() {
     install_deps
 
     info "Done! Run: movie-cli --help"
+
+    # ponytail: cleanup temp dir while still in scope (local var)
+    rm -rf "$tmp_dir" 2>/dev/null
 }
 
 main "$@"
