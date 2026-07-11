@@ -42,8 +42,8 @@ cleanup() {
     fi
     # Remove mpv IPC socket dir
     [[ -n "${SOCKET_DIR:-}" ]] && rm -rf "$SOCKET_DIR" 2>/dev/null
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/movie-cli-mpv-$$" 2>/dev/null
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/movie-cli-pos-script-$$.lua" 2>/dev/null
+    rm -f "${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-mpv-$$" 2>/dev/null
+    rm -f "${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-script-$$.lua" 2>/dev/null
 }
 if [[ -z "${BATS_TEST_FILENAME:-}" ]]; then
     trap cleanup EXIT
@@ -54,7 +54,7 @@ fi
 # Ensure directories exist
 # ═══════════════════════════════════════════════════════════════
 init_dirs() {
-    mkdir -p "$CONF_DIR" "$CACHE_DIR" "$DATA_DIR"
+    mkdir -p "$CONF_DIR" "$CACHE_DIR" "$DATA_DIR" "${XDG_RUNTIME_DIR:-$HOME/.runtime}"
 }
 
 # ═══════════════════════════════════════════════════════════════

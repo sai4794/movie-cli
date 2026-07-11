@@ -53,8 +53,8 @@ play_video() {
     case "$player" in
         mpv)
             # ponytail: Lua script saves final position on quit (IPC socket dies with mpv)
-            local pos_file="${XDG_RUNTIME_DIR:-/tmp}/movie-cli-pos-$$"
-            local script_file="${XDG_RUNTIME_DIR:-/tmp}/movie-cli-pos-script-$$.lua"
+            local pos_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-$$"
+            local script_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-script-$$.lua"
             cat > "$script_file" << LUAEOF
 mp.register_event("shutdown", function()
     local pos = mp.get_property_number("time-pos", 0)
@@ -67,7 +67,7 @@ LUAEOF
             if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
                 sock="$XDG_RUNTIME_DIR/movie-cli-mpv-$$"
             else
-                SOCKET_DIR=$(mktemp -d "/tmp/movie-cli.XXXXXX")
+                SOCKET_DIR=$(mktemp -d "$HOME/.runtime/movie-cli.XXXXXX")
                 sock="$SOCKET_DIR/mpv.sock"
             fi
             cmd+=(--script="$script_file" "--input-ipc-server=$sock")
@@ -108,7 +108,7 @@ LUAEOF
 # ═══════════════════════════════════════════════════════════════
 get_mpv_position() {
     # ponytail: try Lua pos_file first (mpv already exited), then IPC socket
-    local pos_file="${XDG_RUNTIME_DIR:-/tmp}/movie-cli-pos-$$"
+    local pos_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-$$"
     if [[ -f "$pos_file" ]]; then
         cat "$pos_file" 2>/dev/null
         return 0
@@ -119,7 +119,7 @@ get_mpv_position() {
     if [[ -n "${SOCKET_DIR:-}" ]]; then
         sock="$SOCKET_DIR/mpv.sock"
     else
-        sock="${XDG_RUNTIME_DIR:-/tmp}/movie-cli-mpv-$$"
+        sock="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-mpv-$$"
     fi
     [[ -S "$sock" ]] || return 1
 
@@ -138,7 +138,7 @@ get_mpv_duration() {
     if [[ -n "${SOCKET_DIR:-}" ]]; then
         sock="$SOCKET_DIR/mpv.sock"
     else
-        sock="${XDG_RUNTIME_DIR:-/tmp}/movie-cli-mpv-$$"
+        sock="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-mpv-$$"
     fi
     [[ -S "$sock" ]] || return 1
 
