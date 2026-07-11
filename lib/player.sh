@@ -76,14 +76,19 @@ LUAEOF
             [[ -n "$referrer" ]] && cmd+=("--referrer=$referrer")
             # ponytail: Termux — mpv-android via intent, then fallback
             if [[ -d "/data/data/com.termux" ]]; then
-                local _am_rc=0
-                am start --user 0 -a android.intent.action.VIEW \
-                    -d "$url" -n is.xyz.mpv/.MPVActivity \
-                    >/dev/null 2>&1 || _am_rc=$?
-                # ponytail: unconditional (debug is silent without --debug)
-                printf "[movie-cli] am start exit: %d\n" "$_am_rc" >&2
+                local _am_rc=0 _am_err=""
+                debug "am start URL: $url"
+                debug "am start cmd: am start --user 0 -a android.intent.action.VIEW -d '$url' -n is.xyz.mpv/.MPVActivity"
+                # Strip exported DEBUG/VERBOSE — Termux's am wrapper is a
+                # shell script and leaked env vars change its behaviour.
+                _am_err=$(env -u DEBUG -u VERBOSE \
+                    am start --user 0 -a android.intent.action.VIEW \
+                    -d "$url" -n is.xyz.mpv/.MPVActivity 2>&1) || _am_rc=$?
+                debug "am start exit: $_am_rc"
+                [[ -n "$_am_err" ]] && debug "am start output: $_am_err"
                 [[ "$_am_rc" -eq 0 ]] && return 0
-                warn "mpv-android not found. Install from Play Store for headed playback."
+                warn "mpv-android intent failed (exit $_am_rc). Falling back to terminal mpv."
+                [[ -n "$_am_err" ]] && warn "am output: $_am_err"
             fi
             cmd+=("$url")
             ;;
