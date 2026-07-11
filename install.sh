@@ -111,8 +111,7 @@ main() {
     mkdir -p "$INSTALL_DIR" "$SHARE_DIR" "$CONF_DIR"
 
     # Download and extract
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
+    local tmp_dir=$(mktemp -d)
     trap 'rm -rf "$tmp_dir"' EXIT
 
     info "Downloading..."
