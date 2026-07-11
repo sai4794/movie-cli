@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# ponytail: bash 4+ required (macOS ships 3.2)
+[[ ${BASH_VERSINFO[0]} -ge 4 ]] || { echo "movie-cli requires bash 4+ (you have $BASH_VERSION)"; echo "Install: brew install bash"; exit 1; }
+
 # ═══════════════════════════════════════════════════════════════
 # Find script directory and load libraries
 # ═══════════════════════════════════════════════════════════════
