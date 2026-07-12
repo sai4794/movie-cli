@@ -258,7 +258,14 @@ plugin_get_url() {
                         quality: (if ($t | test("(?i)1080p|1080")) then "1080" elif ($t | test("(?i)720p|720")) then "720" elif ($t | test("(?i)480p|480")) then "480" elif ($t | test("(?i)4k|2160p|2160")) then "4K" else "auto" end),
                         url: .url,
                         size: (try (($t | match("[0-9]+(?:\\.[0-9]+)?\\s*(?:GB|MB|gb|mb)"; "i") | .string) // "unknown") catch "unknown"),
-                        provider: ((.name // "Addon") | gsub("\n"; " "))
+                        provider: ((.name // "Addon") | gsub("\\n"; " ")),
+                        lang: (if ($t | test("(?i)telugu|\\bTel\\b")) then "telugu"
+                               elif ($t | test("(?i)hindi|bollywood")) then "hindi"
+                               elif ($t | test("(?i)\\btamil\\b")) then "tamil"
+                               elif ($t | test("(?i)kannada")) then "kannada"
+                               elif ($t | test("(?i)malayalam")) then "malayalam"
+                               elif ($t | test("(?i)english")) then "english"
+                               else "unknown" end)
                     } ]
                 ' 2>/dev/null > "$tmp_dir/addon_${addon_idx}.json"
             fi
@@ -337,7 +344,8 @@ plugin_get_url() {
     # Wait for all background jobs to finish
     wait "${pids[@]}" 2>/dev/null || true
 
-    # Merge all JSON outputs
+    # Merge all JSON outputs and sort by language relevance
+    # ponytail: known languages first, unknown last
     local merged_json="[]"
     for f in "$tmp_dir"/*.json; do
         [[ -f "$f" ]] || continue
@@ -348,6 +356,16 @@ plugin_get_url() {
         fi
     done
     rm -rf "$tmp_dir"
+
+    # Sort: known languages first (telugu > hindi > tamil > kannada > malayalam > english), unknown last
+    merged_json=$(printf '%s' "$merged_json" | jq '
+        sort_by(
+            if .lang == "unknown" then 1
+            elif .lang == "english" then 2
+            else 0
+            end
+        )
+    ' 2>/dev/null || echo "$merged_json")
 
     if [[ -z "$merged_json" || "$merged_json" == "[]" ]]; then
         die_plugin "No playable links resolved for ID: $id"
