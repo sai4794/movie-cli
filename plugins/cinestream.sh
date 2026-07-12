@@ -224,7 +224,6 @@ plugin_get_url() {
     # Built-in default addons (free, zero-config)
     # ponytail: superflix removed (404 since 2025). Add back when reachable.
     addon_list+=("https://desiflix.stremioaddon.workers.dev")
-    addon_list+=("https://torrentio.strem.fun")
     addon_list+=("https://addon-osvh.onrender.com")
 
 
