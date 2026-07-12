@@ -81,14 +81,14 @@ LUAEOF
                 # -W: wait for mpv-android to finish before returning.
                 # -f 0x10000000: FLAG_ACTIVITY_NEW_TASK. Required when launching
                 # from a shell context to force the app to the foreground.
-                # Without this, Android may launch mpv-android in the background,
-                # resulting in audio-only playback and Termux staying on screen.
+                # -t "video/*": Required for extensionless streaming URLs,
+                # otherwise Android throws 'Activity class does not exist'.
                 # Strip exported DEBUG/VERBOSE — Termux's am wrapper is a
                 # shell script and leaked env vars change its behaviour.
                 _am_err=$(env -u DEBUG -u VERBOSE \
                     am start -W --user 0 \
                     -a android.intent.action.VIEW \
-                    -d "$url" -f 0x10000000 \
+                    -d "$url" -t "video/*" -f 0x10000000 \
                     -n is.xyz.mpv/.MPVActivity 2>&1) || _am_rc=$?
                 debug "am start exit: $_am_rc"
                 [[ -n "$_am_err" ]] && debug "am start output: $_am_err"
