@@ -61,13 +61,13 @@ install_deps() {
 
     (( ${#to_install[@]} == 0 )) && return 0
 
-    # Detect package manager
+    # Detect package manager (Termux: pkg before apt-get, both exist)
     local pm=""
-    if command -v apt-get &>/dev/null; then pm="apt"
+    if command -v pkg &>/dev/null; then pm="pkg"  # Termux
+    elif command -v apt-get &>/dev/null; then pm="apt"
     elif command -v dnf &>/dev/null; then pm="dnf"
     elif command -v pacman &>/dev/null; then pm="pacman"
     elif command -v brew &>/dev/null; then pm="brew"
-    elif command -v pkg &>/dev/null; then pm="pkg"  # Termux
     fi
 
     if [[ -z "$pm" ]]; then
