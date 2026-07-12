@@ -40,6 +40,7 @@ _android_escape_uri() {
 _android_launch() {
     local url="$1"
     local wait_for_exit="${2:-0}"
+    local start_time="${3:-}"
     local _am_rc=0 _am_err=""
     local intent_url
 
@@ -61,6 +62,9 @@ _android_launch() {
     # ponytail: -W blocks until mpv-android exits. Needed for series
     # playback (NO_DETACH=1) so script waits for player to finish.
     [[ "$wait_for_exit" == "1" ]] && am_flags+=(-W)
+    # ponytail: --ei position is mpv-android's verified resume extra (milliseconds)
+    # Source: MPVActivity.kt parseIntentExtras() — extras.getInt("position", 0) / 1000
+    [[ -n "$start_time" ]] && am_flags+=(--ei position $((start_time * 1000)))
 
     # ponytail: strip env vars that break Termux's am wrapper
     _am_err=$(env -u DEBUG -u VERBOSE am start "${am_flags[@]}" 2>&1) || _am_rc=$?
@@ -115,7 +119,7 @@ play_video() {
             if [[ -d "/data/data/com.termux" ]]; then
                 debug "Termux detected (Android $(getprop ro.build.version.release 2>/dev/null || echo unknown)), DISPLAY=${DISPLAY:-<empty>}"
 
-                if _android_launch "$url" "${NO_DETACH:-0}"; then
+                if _android_launch "$url" "${NO_DETACH:-0}" "$start_time"; then
                     return 0
                 fi
 
