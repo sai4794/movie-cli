@@ -192,3 +192,23 @@ load 'setup'
     qual=$(printf '%s' "$stream" | jq -r '.quality // empty')
     [[ -z "$qual" ]]
 }
+
+@test "_android_escape_uri encodes raw VidLink headers query" {
+    local raw='https://stormvv.vodvidl.site/mp/resource/video.mp4?headers={"referer":"https://filmboom.top/","origin":"https://filmboom.top"}&host=https://bcdnxw.hakunaymatata.com&sign=abc%2B123'
+    local result
+    result=$(_android_escape_uri "$raw")
+
+    [[ "$result" == *'headers=%7B%22referer%22:%22https://filmboom.top/%22%2C%22origin%22:%22https://filmboom.top%22%7D'* ]]
+    [[ "$result" == *'&host=https://bcdnxw.hakunaymatata.com&sign=abc%2B123'* ]]
+    [[ "$result" != *'{'* ]]
+    [[ "$result" != *'"'* ]]
+}
+
+@test "_android_escape_uri encodes spaces in provider proxy URLs" {
+    local raw='https://p.111477.xyz/bulk?u=https://a.111477.xyz/tvs/Breaking Bad/Season 1/file.mkv'
+    local result
+    result=$(_android_escape_uri "$raw")
+
+    [[ "$result" == *'Breaking%20Bad/Season%201/file.mkv'* ]]
+    [[ "$result" != *' '* ]]
+}

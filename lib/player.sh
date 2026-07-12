@@ -26,6 +26,14 @@ validate_player() {
 # forces Android to match video players.
 ANDROID_MIME="${ANDROID_MIME:-video/*}"
 
+_android_escape_uri() {
+    local raw="$1"
+
+    # Android intents reject or mangle raw spaces/JSON chars in stream URLs.
+    # Keep URL delimiters and existing percent-escapes intact.
+    python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=":/?&=%+-._~"))' "$raw" 2>/dev/null || printf '%s\n' "$raw"
+}
+
 # ponytail: try launching URL via Android implicit VIEW intent.
 # No hardcoded activities — Android resolves the best handler.
 # Returns 0 on success.
@@ -33,17 +41,23 @@ _android_launch() {
     local url="$1"
     local wait_for_exit="${2:-0}"
     local _am_rc=0 _am_err=""
+    local intent_url
+
+    intent_url=$(_android_escape_uri "$url")
+    if [[ "$intent_url" != "$url" ]]; then
+        debug "Android intent URI encoded"
+    fi
 
     # ponytail: resolve 302 redirects — mpv-android doesn't follow them,
     # but terminal mpv does. Proxy URLs (p.111477.xyz, etc.) 302 to CDN.
     local resolved_url
-    resolved_url=$(curl -sI --max-time 5 -o /dev/null -w '%{redirect_url}' "$url" 2>/dev/null)
+    resolved_url=$(curl -sI --max-time 5 -o /dev/null -w '%{redirect_url}' "$intent_url" 2>/dev/null)
     if [[ -n "$resolved_url" ]]; then
-        debug "Redirect resolved: $url → $resolved_url"
-        url="$resolved_url"
+        debug "Redirect resolved: $url -> $resolved_url"
+        intent_url=$(_android_escape_uri "$resolved_url")
     fi
 
-    local am_flags=(-a android.intent.action.VIEW -d "$url" -t "$ANDROID_MIME")
+    local am_flags=(-a android.intent.action.VIEW -d "$intent_url" -t "$ANDROID_MIME")
     # ponytail: -W blocks until mpv-android exits. Needed for series
     # playback (NO_DETACH=1) so script waits for player to finish.
     [[ "$wait_for_exit" == "1" ]] && am_flags+=(-W)
