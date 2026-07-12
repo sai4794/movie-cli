@@ -124,9 +124,10 @@ main() {
     extracted_dir=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)
     [[ -n "$extracted_dir" ]] || { error "Extraction failed: no root directory found"; exit 1; }
 
-    # Install files
+    # Install files (rm first — cp -r nests instead of overwriting if target exists)
     cp "$extracted_dir/movie-cli" "$INSTALL_DIR/movie-cli"
     chmod +x "$INSTALL_DIR/movie-cli"
+    rm -rf "$SHARE_DIR/lib" "$SHARE_DIR/plugins" "$SHARE_DIR/config"
     cp -r "$extracted_dir/lib" "$SHARE_DIR/lib"
     cp -r "$extracted_dir/plugins" "$SHARE_DIR/plugins"
     cp -r "$extracted_dir/config" "$SHARE_DIR/config"
