@@ -31,12 +31,16 @@ ANDROID_MIME="${ANDROID_MIME:-video/*}"
 # Returns 0 on success.
 _android_launch() {
     local url="$1"
+    local wait_for_exit="${2:-0}"
     local _am_rc=0 _am_err=""
 
+    local am_flags=(-a android.intent.action.VIEW -d "$url" -t "$ANDROID_MIME")
+    # ponytail: -W blocks until mpv-android exits. Needed for series
+    # playback (NO_DETACH=1) so script waits for player to finish.
+    [[ "$wait_for_exit" == "1" ]] && am_flags+=(-W)
+
     # ponytail: strip env vars that break Termux's am wrapper
-    _am_err=$(env -u DEBUG -u VERBOSE \
-        am start -a android.intent.action.VIEW \
-        -d "$url" -t "$ANDROID_MIME" 2>&1) || _am_rc=$?
+    _am_err=$(env -u DEBUG -u VERBOSE am start "${am_flags[@]}" 2>&1) || _am_rc=$?
 
     debug "am start exit: $_am_rc"
     [[ -n "$_am_err" ]] && debug "am start output: $_am_err"
@@ -88,7 +92,7 @@ play_video() {
             if [[ -d "/data/data/com.termux" ]]; then
                 debug "Termux detected (Android $(getprop ro.build.version.release 2>/dev/null || echo unknown)), DISPLAY=${DISPLAY:-<empty>}"
 
-                if _android_launch "$url"; then
+                if _android_launch "$url" "${NO_DETACH:-0}"; then
                     return 0
                 fi
 
