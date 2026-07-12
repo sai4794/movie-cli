@@ -99,4 +99,33 @@ urlencode() {
     printf '%s' "$1"
 }
 
+# ═══════════════════════════════════════════════════════════════
+# Profiler (--profile flag)
+# ═══════════════════════════════════════════════════════════════
+_PROFILE_ENABLED=0
+declare -a _PROF_NAMES=()
+declare -a _PROF_STARTS=()
+declare -a _PROF_ENDS=()
+
+prof_start() { [[ "$_PROFILE_ENABLED" == "1" ]] || return 0; _PROF_NAMES+=("$1"); _PROF_STARTS+=("$(date +%s%N)"); _PROF_ENDS+=("0"); }
+prof_end()   { [[ "$_PROFILE_ENABLED" == "1" ]] || return 0; _PROF_ENDS[$((${#_PROF_ENDS[@]}-1))]=$(date +%s%N); }
+
+prof_print() {
+    [[ "$_PROFILE_ENABLED" == "1" ]] || return 0
+    local i=0 total=0
+    printf '\n%-40s %10s\n' "Stage" "Time(ms)"
+    printf '%-40s %10s\n' "----------------------------------------" "----------"
+    while (( i < ${#_PROF_NAMES[@]} )); do
+        local ms=0
+        if [[ "${_PROF_ENDS[$i]}" != "0" ]]; then
+            ms=$(( (${_PROF_ENDS[$i]} - ${_PROF_STARTS[$i]}) / 1000000 ))
+        fi
+        printf '%-40s %10s\n' "${_PROF_NAMES[$i]}" "${ms}ms"
+        total=$(( total + ms ))
+        (( ++i ))
+    done
+    printf '%-40s %10s\n' "----------------------------------------" "----------"
+    printf '%-40s %10s\n' "Total" "${total}ms"
+}
+
 

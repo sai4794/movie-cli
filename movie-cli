@@ -183,7 +183,9 @@ search_and_play() {
     local plugin_name="$2"
     local quality="$3"
 
+    prof_start "plugin_discovery"
     discover_plugins
+    prof_end
 
     local selected_plugin="${plugin_name:-${CONF_PLUGIN:-all}}"
     if [[ "$selected_plugin" == "auto" ]]; then
@@ -197,6 +199,7 @@ search_and_play() {
             results=$(cache_get "$cache_key" "$CACHE_TTL_SEARCH" 2>/dev/null) || true
         fi
         if [[ -z "$results" || "$results" == "[]" ]]; then
+            prof_start "search"
             status_msg "Searching all plugins..."
             local merged_results="[]"
             for p_name in "${!LOADED_PLUGINS[@]}"; do
@@ -212,6 +215,7 @@ search_and_play() {
             spinner_stop
             [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
             [[ "${NO_CACHE:-0}" != "1" ]] && cache_set "$cache_key" "$results"
+            prof_end
         fi
     else
         [[ -n "${LOADED_PLUGINS[$selected_plugin]:-}" ]] || die_plugin "Plugin not found: $selected_plugin"
@@ -270,6 +274,7 @@ search_and_play() {
             printf '%d. %s\n' "$idx" "$d_title"
             idx=$((idx + 1))
         done
+        prof_print
         exit 0
     fi
 
@@ -492,9 +497,11 @@ search_and_play() {
 
     # Movie playback flow
     status_msg "Resolving streams..."
+    prof_start "stream_resolution"
     local qualities_json
     qualities_json=$(plugin_get_url "$selected_id" "$quality")
     qualities_json=$(sort_streams "$qualities_json")
+    prof_end
         spinner_stop
 
     [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No video URL for: $selected_title"
@@ -523,10 +530,12 @@ search_and_play() {
 
     history_add "$selected_title" "$selected_plugin_match" "$selected_id" "movie"
     status_msg "Playing: $selected_title"
+    prof_start "player_launch"
     local saved_no_detach="$NO_DETACH"
     NO_DETACH=1
     play_video "$video_url"
     NO_DETACH="$saved_no_detach"
+    prof_end
     # ponytail: save final position for --continue
     local end_pos
     end_pos=$(get_mpv_position 2>/dev/null || echo 0)
@@ -583,6 +592,7 @@ main() {
             --quiet)         QUIET=1; shift ;;
             --no-color)      NO_COLOR=1; shift ;;
             --no-cache)      NO_CACHE=1; shift ;;
+            --profile)       _PROFILE_ENABLED=1; shift ;;
             -*)              die_user "Unknown option: $1" ;;
             *)               query="$1"; shift ;;
         esac
@@ -683,6 +693,7 @@ main() {
     export SELECT_N="$select_n" SEARCH_ONLY="$search_only" NO_DETACH="${NO_DETACH:-0}"
 
     search_and_play "$query" "$plugin" "$quality"
+    prof_print
 }
 
 main "$@"

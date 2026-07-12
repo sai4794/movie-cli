@@ -305,6 +305,7 @@ show_help() {
     printf "      --quiet            Suppress non-essential output\n" >&2
     printf "      --no-cache         Bypass cache\n" >&2
     printf "      --clear-cache      Clear all cached data\n" >&2
+    printf "      --profile          Show timing profile\n" >&2
     printf "  -v, --version          Show version\n" >&2
     printf "  -h, --help             Show this help\n\n" >&2
     printf "${C_BOLD}Examples:${C_RESET}\n" >&2
