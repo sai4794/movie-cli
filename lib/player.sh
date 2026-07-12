@@ -78,13 +78,15 @@ LUAEOF
             if [[ -d "/data/data/com.termux" ]]; then
                 local _am_rc=0 _am_err=""
                 debug "am start URL: $url"
-                debug "am start cmd: am start --user 0 -a android.intent.action.VIEW -d '$url' -t 'video/*' -n is.xyz.mpv/.MPVActivity"
+                # -W: wait for mpv-android to finish before returning.
+                # Without -W, play_video returns instantly and the series
+                # menu covers mpv-android — user hears audio but sees no
+                # video because Termux is in the foreground.
                 # Strip exported DEBUG/VERBOSE — Termux's am wrapper is a
                 # shell script and leaked env vars change its behaviour.
-                # -t "video/*" forces MIME type so mpv-android always sets
-                # up video output, even for URLs with no file extension.
                 _am_err=$(env -u DEBUG -u VERBOSE \
-                    am start --user 0 -a android.intent.action.VIEW \
+                    am start -W --user 0 \
+                    -a android.intent.action.VIEW \
                     -d "$url" -t "video/*" \
                     -n is.xyz.mpv/.MPVActivity 2>&1) || _am_rc=$?
                 debug "am start exit: $_am_rc"
