@@ -34,14 +34,14 @@ plugin_search() {
 
 # Get video URL for playback
 # Args: $1=id (from plugin_search), $2=quality
-# Output: single URL line to stdout
+# Output: JSON array to stdout: [{quality, url, size}]
 plugin_get_url() {
     local id="$1"
     local quality="${2:-720}"
 
     # TODO: Implement URL retrieval
     # Example output:
-    # echo "https://example.com/video.m3u8"
+    # echo '[{"quality":"1080","url":"https://example.com/video.m3u8","size":"2.1 GB"}]'
     die_plugin "Not implemented"
 }
 

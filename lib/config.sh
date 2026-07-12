@@ -26,7 +26,7 @@ CONF_NO_COLOR="${NO_COLOR:-0}"
 [[ "${NO_COLOR:-0}" == "1" ]] && NO_COLOR_SET=1
 
 # Valid configuration keys (whitelist)
-_VALID_KEYS="PLAYER QUALITY PLUGIN VERBOSE DEBUG QUIET NO_COLOR UI_BACKEND SYNCPLAY_HOST SYNCPLAY_ROOM"
+_VALID_KEYS="PLAYER QUALITY PLUGIN VERBOSE DEBUG QUIET NO_COLOR"
 
 # ═══════════════════════════════════════════════════════════════
 # Safe Config Loader — key=value parser (NO shell execution)
@@ -75,9 +75,6 @@ load_config_file() {
                 DEBUG)     [[ -z "${DEBUG_SET:-}" ]] && CONF_DEBUG="$value" ;;
                 QUIET)     [[ -z "${QUIET_SET:-}" ]] && CONF_QUIET="$value" ;;
                 NO_COLOR)  [[ -z "${NO_COLOR_SET:-}" ]] && CONF_NO_COLOR="$value" ;;
-                UI_BACKEND) CONF_UI_BACKEND="$value" ;;
-                SYNCPLAY_HOST) CONF_SYNCPLAY_HOST="$value" ;;
-                SYNCPLAY_ROOM) CONF_SYNCPLAY_ROOM="$value" ;;
             esac
             debug "Config: $key=$value"
         else
@@ -129,9 +126,6 @@ QUALITY=720
 
 # Plugin: auto (try all), or specific name
 PLUGIN=auto
-
-# UI backend: fzf, rofi, dmenu
-# UI_BACKEND=fzf
 
 # Verbose output (0 or 1)
 VERBOSE=0

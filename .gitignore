@@ -3,6 +3,9 @@ tests/bats/
 tests/bats-support/
 tests/bats-assert/
 
+# Generated
+graphify-out/
+
 # Cache
 .cache/
 

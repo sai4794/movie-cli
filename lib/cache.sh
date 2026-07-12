@@ -4,10 +4,7 @@
 
 # ═══════════════════════════════════════════════════════════════
 # Cache TTLs (seconds)
-# ═══════════════════════════════════════════════════════════════
 CACHE_TTL_SEARCH=3600      # 1 hour — search results
-CACHE_TTL_HEALTH=3600      # 1 hour — plugin health checks
-CACHE_TTL_TOKEN=86400     # 24 hours — token validation
 
 # Max cache entries before eviction
 CACHE_MAX_ENTRIES=500
@@ -48,7 +45,6 @@ cache_get() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# Cache Evict — remove oldest entries if over max
 # Cache Evict — remove oldest entries if over max
 cache_evict() {
     local count
@@ -96,7 +92,7 @@ cache_delete() {
 # Cache Clear All
 # ═══════════════════════════════════════════════════════════════
 cache_clear() {
-    rm -rf "$CACHE_DIR"/*
+    rm -rf "${CACHE_DIR:?}"/*
     mkdir -p "$CACHE_DIR"
 }
 

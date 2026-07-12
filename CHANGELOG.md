@@ -19,6 +19,6 @@ All notable changes to movie-cli will be documented in this file.
 - Quality sorting and stream verification
 - HMAC URL signing for MovieBlast (re-signs at playback)
 - Plugin API v5 with template
-- bats-core test suite (53 tests)
+- bats-core test suite (47 tests)
 - Install script for Linux, macOS, Termux
 - Uninstall script

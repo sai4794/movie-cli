@@ -85,24 +85,6 @@ sha256_sum() {
     fi
 }
 
-# Portable SHA256 verify
-sha256_check() {
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "$@"
-    elif command -v shasum &>/dev/null; then
-        shasum -a 256 "$@"
-    else
-        return 1
-    fi
-}
-
-# Portable date (ISO 8601 with timezone)
-date_iso() {
-    date -Iseconds 2>/dev/null || \
-    date +"%Y-%m-%dT%H:%M:%S%z" 2>/dev/null || \
-    date -u +"%Y-%m-%dT%H:%M:%SZ"
-}
-
 # Portable date (ISO 8601 with timezone)
 date_iso() {
     date -Iseconds 2>/dev/null || \

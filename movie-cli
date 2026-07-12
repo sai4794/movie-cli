@@ -42,10 +42,10 @@ validate_plugin() {
     printf '%s' "$content" | grep -qE '^PLUGIN_API_VERSION="[^"]+"' || return 1
     
     # Check plugin_search function exists
-    printf '%s' "$content" | grep -qE '^plugin_search\(\)' || return 1
-    
+    printf '%s' "$content" | grep -qE '^plugin_search[[:space:]]*\(\)' || return 1
+
     # Check plugin_get_url function exists
-    printf '%s' "$content" | grep -qE '^plugin_get_url\(\)' || return 1
+    printf '%s' "$content" | grep -qE '^plugin_get_url[[:space:]]*\(\)' || return 1
     
     # Extract and check API version (simple grep for major version)
     local version
@@ -123,9 +123,14 @@ verify_streams() {
         url=$(printf '%s' "$json" | jq -r ".[$i].url // empty" 2>/dev/null)
         if [[ -n "$url" ]]; then
             local http_code curl_exit=0
+            # ponytail: only set Referer for Vidlink/CDN URLs, omit for others
+            local referer_arg=()
+            if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
+                referer_arg=(-H "Referer: https://vidlink.pro/")
+            fi
             http_code=$(curl -so /dev/null -w "%{http_code}" \
                 -L --connect-timeout 4 --max-time 8 \
-                -H "Referer: https://vidlink.pro/" \
+                "${referer_arg[@]}" \
                 "$url" 2>/dev/null) || curl_exit=$?
             [[ "$curl_exit" -ne 0 ]] && http_code="000"
             if [[ "$http_code" =~ ^(200|206)$ ]]; then

@@ -261,7 +261,7 @@ plugin_sign_url() {
     local url="$1"
     # Strip existing verify param if present, then re-sign
     local clean_url
-    clean_url=$(printf '%s' "$url" | sed 's/?verify=.*//')
+    clean_url=$(printf '%s' "$url" | sed 's/[?&]verify=[^&]*//' | sed 's/?$//')
     _mb_sign_url "$clean_url"
 }
 
@@ -304,9 +304,16 @@ plugin_list_episodes() {
 
 plugin_health() {
     _load_token || return 2
+    _load_mb_config
 
+    local url="${_MB_BASE_URL}/api/search/test/${_MB_TOKEN}"
     local status
-    status=$(api_curl "${_MB_HEADERS[@]}" "${_MB_BASE_URL}/api/search/test/${_MB_TOKEN}" 2>/dev/null | \
+    status=$(curl -sSL --connect-timeout 10 --max-time 30 --proto '=https' --tlsv1.2 \
+        -H "hash256: $_MB_HASH256" \
+        -H "packagename: $_MB_PACKAGENAME" \
+        -H "signature: $_MB_SIGNATURE" \
+        -H "User-Agent: MovieBlast" \
+        "$url" 2>/dev/null | \
         jq -r '.search | length' 2>/dev/null) || return 2
 
     [[ "$status" -gt 0 ]] 2>/dev/null && return 0 || return 1
