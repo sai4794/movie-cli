@@ -86,8 +86,10 @@ LUAEOF
                 # declare the type. Extensionless URLs work fine with just -n.
                 # Strip exported DEBUG/VERBOSE — Termux's am wrapper is a
                 # shell script and leaked env vars change its behaviour.
+                # ponytail: --user 0 needed — Termux is a separate user,
+                # Play Store apps live under user 0.
                 _am_err=$(env -u DEBUG -u VERBOSE \
-                    am start -W \
+                    am start -W --user 0 \
                     -a android.intent.action.VIEW \
                     -d "$url" -f 0x10000000 \
                     -n is.xyz.mpv/.MPVActivity 2>&1) || _am_rc=$?
