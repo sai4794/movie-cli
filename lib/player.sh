@@ -79,15 +79,16 @@ LUAEOF
                 local _am_rc=0 _am_err=""
                 debug "am start URL: $url"
                 # -W: wait for mpv-android to finish before returning.
-                # Without -W, play_video returns instantly and the series
-                # menu covers mpv-android — user hears audio but sees no
-                # video because Termux is in the foreground.
+                # -f 0x10000000: FLAG_ACTIVITY_NEW_TASK. Required when launching
+                # from a shell context to force the app to the foreground.
+                # Without this, Android may launch mpv-android in the background,
+                # resulting in audio-only playback and Termux staying on screen.
                 # Strip exported DEBUG/VERBOSE — Termux's am wrapper is a
                 # shell script and leaked env vars change its behaviour.
                 _am_err=$(env -u DEBUG -u VERBOSE \
                     am start -W --user 0 \
                     -a android.intent.action.VIEW \
-                    -d "$url" -t "video/*" \
+                    -d "$url" -f 0x10000000 \
                     -n is.xyz.mpv/.MPVActivity 2>&1) || _am_rc=$?
                 debug "am start exit: $_am_rc"
                 [[ -n "$_am_err" ]] && debug "am start output: $_am_err"
