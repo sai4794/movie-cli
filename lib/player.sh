@@ -34,6 +34,15 @@ _android_launch() {
     local wait_for_exit="${2:-0}"
     local _am_rc=0 _am_err=""
 
+    # ponytail: resolve 302 redirects — mpv-android doesn't follow them,
+    # but terminal mpv does. Proxy URLs (p.111477.xyz, etc.) 302 to CDN.
+    local resolved_url
+    resolved_url=$(curl -sI --max-time 5 -o /dev/null -w '%{redirect_url}' "$url" 2>/dev/null)
+    if [[ -n "$resolved_url" ]]; then
+        debug "Redirect resolved: $url → $resolved_url"
+        url="$resolved_url"
+    fi
+
     local am_flags=(-a android.intent.action.VIEW -d "$url" -t "$ANDROID_MIME")
     # ponytail: -W blocks until mpv-android exits. Needed for series
     # playback (NO_DETACH=1) so script waits for player to finish.
