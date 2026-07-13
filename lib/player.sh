@@ -52,7 +52,7 @@ _android_launch() {
     local -a redirect_headers=()
     [[ -n "$referrer" ]] && redirect_headers+=(-H "Referer: $referrer")
     local resolved_url
-    resolved_url=$(curl -sI -L --max-time 5 -o /dev/null \
+    resolved_url=$(curl -g -sI -L --max-time 5 -o /dev/null \
         -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null)
     if [[ -n "$resolved_url" && "$resolved_url" != "$url" ]]; then
         debug "Redirect resolved: $url -> $resolved_url"
