@@ -41,21 +41,29 @@ _android_launch() {
     local url="$1"
     local wait_for_exit="${2:-0}"
     local start_time="${3:-}"
+    local referrer="${4:-}"
     local _am_rc=0 _am_err=""
-    local intent_url
-
-    intent_url=$(_android_escape_uri "$url")
-    if [[ "$intent_url" != "$url" ]]; then
-        debug "Android intent URI encoded"
-    fi
 
     # ponytail: resolve 302 redirects — mpv-android doesn't follow them,
     # but terminal mpv does. Proxy URLs (p.111477.xyz, etc.) 302 to CDN.
+    # Use the raw URL (not yet URI-encoded) so curl sees the real endpoint.
+    # Pass Referer if required — some CDNs validate it even on HEAD requests.
+    local final_url="$url"
+    local -a redirect_headers=()
+    [[ -n "$referrer" ]] && redirect_headers+=(-H "Referer: $referrer")
     local resolved_url
-    resolved_url=$(curl -sI --max-time 5 -o /dev/null -w '%{redirect_url}' "$intent_url" 2>/dev/null)
-    if [[ -n "$resolved_url" ]]; then
+    resolved_url=$(curl -sI -L --max-time 5 -o /dev/null \
+        -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null)
+    if [[ -n "$resolved_url" && "$resolved_url" != "$url" ]]; then
         debug "Redirect resolved: $url -> $resolved_url"
-        intent_url=$(_android_escape_uri "$resolved_url")
+        final_url="$resolved_url"
+    fi
+
+    # ponytail: URI-encode exactly once, after all redirects are resolved.
+    local intent_url
+    intent_url=$(_android_escape_uri "$final_url")
+    if [[ "$intent_url" != "$final_url" ]]; then
+        debug "Android intent URI encoded"
     fi
 
     local am_flags=(-a android.intent.action.VIEW -d "$intent_url" -t "$ANDROID_MIME")
@@ -65,6 +73,11 @@ _android_launch() {
     # ponytail: --ei position is mpv-android's verified resume extra (milliseconds)
     # Source: MPVActivity.kt parseIntentExtras() — extras.getInt("position", 0) / 1000
     [[ -n "$start_time" ]] && am_flags+=(--ei position $((start_time * 1000)))
+    # ponytail: pass HTTP Referer to mpv-android via Intent extras.
+    # mpv-android MPVActivity.kt reads extras.getString("referrer") in parseIntentExtras().
+    [[ -n "$referrer" ]] && am_flags+=(--es referrer "$referrer")
+
+    debug "am start flags: ${am_flags[*]}"
 
     # ponytail: strip env vars that break Termux's am wrapper
     _am_err=$(env -u DEBUG -u VERBOSE am start "${am_flags[@]}" 2>&1) || _am_rc=$?
@@ -119,7 +132,7 @@ play_video() {
             if [[ -d "/data/data/com.termux" ]]; then
                 debug "Termux detected (Android $(getprop ro.build.version.release 2>/dev/null || echo unknown)), DISPLAY=${DISPLAY:-<empty>}"
 
-                if _android_launch "$url" "${NO_DETACH:-0}" "$start_time"; then
+                if _android_launch "$url" "${NO_DETACH:-0}" "$start_time" "$referrer"; then
                     return 0
                 fi
 
