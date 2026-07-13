@@ -104,6 +104,12 @@ play_video() {
     local start_time="${2:-}"
     local player="${PLAYER:-mpv}"
 
+    # ponytail: URL-encode addon URLs with unencoded spaces/brackets
+    # CDN proxies (p.111477.xyz etc.) choke on raw special chars in query params
+    if [[ "$url" == https://* || "$url" == http://* ]]; then
+        url=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=":/?&=%+-._~"))' "$url" 2>/dev/null || printf '%s' "$url")
+    fi
+
     # ponytail: torrent
     if [[ "$url" == magnet:* || "$url" == *.torrent ]]; then
         command -v webtorrent &>/dev/null || die_deps "webtorrent not found. Install: npm install -g webtorrent-cli"
@@ -164,7 +170,7 @@ LUAEOF
                 SOCKET_DIR=$(mktemp -d "$HOME/.runtime/movie-cli.XXXXXX")
                 sock="$SOCKET_DIR/mpv.sock"
             fi
-            cmd+=(--script="$script_file" "--input-ipc-server=$sock")
+            cmd+=(--script="$script_file" "--input-ipc-server=$sock" "--no-ytdl")
             [[ -n "$start_time" ]] && cmd+=(--start=$start_time)
             [[ "${NO_DETACH:-0}" == "1" ]] && cmd+=("--no-terminal")
             [[ -n "$referrer" ]] && cmd+=(--referrer=$referrer)
