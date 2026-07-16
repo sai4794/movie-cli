@@ -93,12 +93,42 @@ history_get_last() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# List Recent Entries (last N, newest first)
+# List Recent Entries (last N, newest first, human-readable)
 # ═══════════════════════════════════════════════════════════════
 history_list() {
     local limit="${1:-20}"
     [[ -f "$HISTORY_FILE" ]] || return 0
-    tail -"$limit" "$HISTORY_FILE" | tac
+    tail -"$limit" "$HISTORY_FILE" | tac | while IFS= read -r line; do
+        printf '%s' "$line" | jq -r '
+            .title as $t |
+            .plugin as $p |
+            .ts as $ts |
+            .type as $type |
+            .season as $s |
+            .episode as $e |
+            .progress as $prog |
+            .duration as $dur |
+            # Extract date from ISO timestamp
+            ($ts | split("T")[0]) as $date |
+            # Build display title with episode info
+            (if $type == "series" and $s != null and $e != null
+             then "\($t) S\($s)E\($e)"
+             else $t end) as $display |
+            # Format progress if present
+            (if $prog > 0 and $dur > 0
+             then
+                 ($prog / 3600 | floor) as $h |
+                 (($prog % 3600) / 60 | floor) as $m |
+                 ($prog % 60 | floor) as $sec |
+                 " [\($h):\($m | tostring | if length < 2 then "0" + . else . end):\($sec | tostring | if length < 2 then "0" + . else . end)]"
+             else "" end) as $prog_str |
+            # Pad display to 32 chars for column alignment
+            ($display + $prog_str) as $title_col |
+            (32 - ($title_col | length)) as $pad |
+            (if $pad > 0 then (" " * $pad) else " " end) as $spacing |
+            "  \($title_col)\($spacing)\($p)  \($date)"
+        ' 2>/dev/null || printf '%s\n' "$line"
+    done
 }
 
 # ═══════════════════════════════════════════════════════════════

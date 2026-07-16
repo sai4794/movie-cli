@@ -20,14 +20,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y mpv fzf jq curl python3 socat
+      - name: Install test framework
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git tests/bats
+          git clone --depth 1 https://github.com/bats-core/bats-support.git tests/bats-support
+          git clone --depth 1 https://github.com/bats-core/bats-assert.git tests/bats-assert
       - name: Syntax check
         run: bash -n movie-cli && bash -n lib/*.sh && bash -n plugins/*.sh && bash -n install.sh && bash -n uninstall.sh
       - name: Run tests
-        run: tests/bats/bin/bats tests/
+        run: tests/bats/bin/bats tests/*.sh
 
   install:
     runs-on: ${{ matrix.os }}

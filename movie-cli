@@ -130,9 +130,9 @@ verify_streams() {
             fi
             http_code=$(curl -so /dev/null -w "%{http_code}" \
                 -L --connect-timeout 4 --max-time 8 \
+                -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
-                "$url" 2>/dev/null) || curl_exit=$?
-            [[ "$curl_exit" -ne 0 ]] && http_code="000"
+                "$url" 2>/dev/null)
             if [[ "$http_code" =~ ^(200|206)$ ]]; then
                 indices+="$i "
             fi
@@ -686,7 +686,7 @@ main() {
     # Require query and validate (Security constraints)
     [[ -n "$query" ]] || die_user "Query cannot be empty"
     (( ${#query} <= 200 )) || die_user "Query is too long (max: 200 characters)"
-    query=$(printf '%s' "$query" | tr -cd '[:alnum:][:space:]._-')
+    query=$(printf '%s' "$query" | tr -cd '[:alnum:][:space:]._-' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ -n "$query" ]] || die_user "Query contains invalid characters"
 
     # Re-initialize colors after CLI flags are parsed (--no-color may have been set)

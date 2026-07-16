@@ -23,7 +23,8 @@ cache_key() {
 cache_get() {
     local key="$1"
     local ttl="${2:-$CACHE_TTL_SEARCH}"
-    local key_file="$CACHE_DIR/$(cache_key "$key")"
+    local key_file
+    key_file="$CACHE_DIR/$(cache_key "$key")"
 
     [[ -f "$key_file" ]] || return 1
 
@@ -69,7 +70,8 @@ cache_evict() {
 cache_set() {
     local key="$1"
     local data="$2"
-    local key_file="$CACHE_DIR/$(cache_key "$key")"
+    local key_file
+    key_file="$CACHE_DIR/$(cache_key "$key")"
 
     mkdir -p "$CACHE_DIR"
     printf '%s' "$data" > "$key_file"
@@ -84,7 +86,8 @@ cache_set() {
 # ═══════════════════════════════════════════════════════════════
 cache_delete() {
     local key="$1"
-    local key_file="$CACHE_DIR/$(cache_key "$key")"
+    local key_file
+    key_file="$CACHE_DIR/$(cache_key "$key")"
     rm -f "$key_file" 2>/dev/null
 }
 

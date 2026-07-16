@@ -111,7 +111,8 @@ main() {
     mkdir -p "$INSTALL_DIR" "$SHARE_DIR" "$CONF_DIR"
 
     # Download and extract
-    local tmp_dir=$(mktemp -d)
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
 
     info "Downloading..."
     curl -fsSL "$REPO_URL/archive/refs/heads/main.tar.gz" -o "$tmp_dir/release.tar.gz"
@@ -127,7 +128,7 @@ main() {
     # Install files (rm first — cp -r nests instead of overwriting if target exists)
     cp "$extracted_dir/movie-cli" "$INSTALL_DIR/movie-cli"
     chmod +x "$INSTALL_DIR/movie-cli"
-    rm -rf "$SHARE_DIR/lib" "$SHARE_DIR/plugins" "$SHARE_DIR/config"
+    rm -rf "${SHARE_DIR:?}/lib" "${SHARE_DIR:?}/plugins" "${SHARE_DIR:?}/config"
     cp -r "$extracted_dir/lib" "$SHARE_DIR/lib"
     cp -r "$extracted_dir/plugins" "$SHARE_DIR/plugins"
     cp -r "$extracted_dir/config" "$SHARE_DIR/config"

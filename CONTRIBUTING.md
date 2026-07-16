@@ -18,12 +18,27 @@ Thank you for your interest in contributing!
 git clone https://github.com/your-fork/movie-cli.git
 cd movie-cli
 
-# Install test framework
-git submodule update --init --recursive
+# Install test framework (bats-core + helpers)
+git clone --depth 1 https://github.com/bats-core/bats-core.git tests/bats
+git clone --depth 1 https://github.com/bats-core/bats-support.git tests/bats-support
+git clone --depth 1 https://github.com/bats-core/bats-assert.git tests/bats-assert
 
 # Run tests
-tests/bats/bin/bats tests/
+tests/bats/bin/bats tests/*.sh
 ```
+
+### Dependencies
+
+| Dependency | Required | Purpose |
+|-----------|----------|---------|
+| `curl` | Yes | HTTP requests |
+| `jq` | Yes | JSON processing |
+| `mpv` | Yes | Video player |
+| `python3` | Yes | Regex extraction |
+| `openssl` | Yes | URL signing |
+| `socat` | Yes | MPV progress tracking |
+| `fzf` | No | Fuzzy selection |
+| `shellcheck` | No | Linting |
 
 ## Code Style
 
@@ -53,6 +68,17 @@ PLUGIN_REQUIRES=("curl" "jq")
 ```
 
 ## Testing
+
+```bash
+# Run all tests
+tests/bats/bin/bats tests/*.sh
+
+# Run a specific test file
+tests/bats/bin/bats tests/test_core.sh
+
+# Run a specific test by name
+tests/bats/bin/bats --filter "VERSION is set" tests/test_core.sh
+```
 
 - Write tests for new functions
 - Mock external services

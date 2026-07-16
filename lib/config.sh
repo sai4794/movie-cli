@@ -16,10 +16,10 @@ CONF_QUIET="${QUIET:-0}"
 CONF_NO_COLOR="${NO_COLOR:-0}"
 
 # Mark which variables were set by environment (to preserve priority)
-# Only mark if the value is non-zero (user explicitly set it)
-[[ "${PLAYER:-}" != "mpv" ]] && PLAYER_SET=1
-[[ "${QUALITY:-}" != "720" ]] && QUALITY_SET=1
-[[ "${PLUGIN:-}" != "auto" ]] && PLUGIN_SET=1
+# Only mark if the env var is actually exported (not just defaulted via ${:-})
+[[ -n "${PLAYER:-}" ]] && PLAYER_SET=1
+[[ -n "${QUALITY:-}" ]] && QUALITY_SET=1
+[[ -n "${PLUGIN:-}" ]] && PLUGIN_SET=1
 [[ "${VERBOSE:-0}" == "1" ]] && VERBOSE_SET=1
 [[ "${DEBUG:-0}" == "1" ]] && DEBUG_SET=1
 [[ "${QUIET:-0}" == "1" ]] && QUIET_SET=1
