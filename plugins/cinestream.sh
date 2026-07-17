@@ -422,9 +422,12 @@ plugin_list_episodes() {
     local response
     response=$(curl -s $_CURL_TIMEOUT "${_CINEMETA_BASE}/meta/series/${series_id}.json") || return 1
 
-    # Filter episodes for the specified season
-    printf '%s' "$response" | jq -c --argjson s "$season" '
-        [.meta.videos[]? | select(.season == $s) | {
+    # Filter episodes for the specified season, exclude future unaired episodes
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u +%Y-%m-%d)
+    printf '%s' "$response" | jq -c --argjson s "$season" --arg now "$now" '
+        [.meta.videos[]? | select(.season == $s) |
+         select(.firstAired == null or .firstAired == "" or .firstAired <= $now) | {
             id: .id,
             title: "E\(.number) - \(.name // "Episode \(.number)")",
             season: .season,
