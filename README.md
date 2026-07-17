@@ -51,13 +51,43 @@ chmod +x movie-cli
 |-----------|----------|---------|
 | `curl` | Yes | HTTP requests |
 | `jq` | Yes | JSON processing |
-| `mpv` | Yes | Video player (vlc/iina also work) |
+| `mpv` | Manual | Video player (vlc/iina also work) — install separately |
 | `fzf` | No | Fuzzy selection (falls back to numbered list) |
 | `python3` | Yes | Regex extraction, embed resolution |
 | `openssl` | Yes | URL signing |
 | `socat` | Yes | MPV progress tracking |
 
-The install script auto-installs missing dependencies via your package manager (apt/dnf/pacman/brew/termux).
+The install script auto-installs core dependencies (curl, jq, python3, openssl, socat, fzf). Media players (mpv/vlc/iina) must be installed manually.
+
+## Supported Platforms
+
+| Platform | Status | Package Manager | Notes |
+|----------|--------|-----------------|-------|
+| Linux (Debian/Ubuntu) | ✅ Supported | apt | Full support |
+| Linux (Fedora) | ✅ Supported | dnf | Full support |
+| Linux (Arch) | ✅ Supported | pacman | Full support |
+| macOS | ✅ Supported | brew | Requires Bash 4+ (installer auto-upgrades) |
+| Android (Termux) | ✅ Supported | pkg | Install from F-Droid or termux.dev |
+
+### Platform-Specific Notes
+
+**Linux**
+- All major distributions supported (Debian, Ubuntu, Fedora, Arch, etc.)
+- Uses `python3` for regex extraction
+- Install mpv: `sudo apt install mpv` or `sudo dnf install mpv`
+
+**macOS**
+- Requires Bash 4+ (macOS ships with Bash 3.2)
+- The installer will automatically upgrade Bash via Homebrew if needed
+- Uses `python3` for regex extraction
+- Install mpv: `brew install mpv`
+
+**Android (Termux)**
+- Install Termux from F-Droid (not Play Store — outdated version)
+- Uses `python` instead of `python3`
+- Uses `openssl-tool` instead of `openssl`
+- Install mpv: `pkg install mpv`
+- For best experience, use Termux:X11 or run in a terminal emulator
 
 ## Usage
 

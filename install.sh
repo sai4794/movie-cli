@@ -138,13 +138,6 @@ install_deps() {
         fi
     done
 
-    # Player: mpv preferred
-    local player_found=0
-    for cmd in mpv vlc iina; do
-        command -v "$cmd" &>/dev/null && player_found=1
-    done
-    (( player_found == 0 )) && to_install+=(mpv)
-
     # Optional: fzf
     command -v fzf &>/dev/null || to_install+=(fzf)
 
@@ -162,23 +155,7 @@ install_deps() {
         dnf)     sudo dnf install -y -q "${to_install[@]}" ;;
         pacman)  sudo pacman -S --noconfirm "${to_install[@]}" ;;
         brew)
-            # ponytail: mpv needs full Xcode on macOS, not just CLT
-            local brew_list=() need_mpv=0
-            for dep in "${to_install[@]}"; do
-                [[ "$dep" == "mpv" ]] && { need_mpv=1; continue; }
-                brew_list+=("$dep")
-            done
-            (( ${#brew_list[@]} > 0 )) && brew install "${brew_list[@]}"
-            if (( need_mpv )); then
-                if xcode-select -p &>/dev/null && [[ -d "/Applications/Xcode.app" ]]; then
-                    brew install mpv
-                elif xcode-select -p &>/dev/null; then
-                    warn "mpv needs full Xcode.app (not just CLT)."
-                    warn "Install Xcode from App Store, then: brew install mpv"
-                else
-                    warn "mpv needs Xcode. Install from App Store, then: brew install mpv"
-                fi
-            fi
+            (( ${#to_install[@]} > 0 )) && brew install "${to_install[@]}"
             ;;
         pkg)     pkg install -y "${to_install[@]}" ;;
     esac
@@ -196,13 +173,15 @@ install_deps() {
         fi
     done
 
-    # Verify player
+    # Verify player (manual prerequisite - not auto-installed)
     local player_ok=0
     for cmd in mpv vlc iina; do
         command -v "$cmd" &>/dev/null && player_ok=1
     done
     if (( player_ok == 0 )); then
-        warn "No media player found. Install mpv: pkg install mpv (Termux) or apt install mpv (Linux)"
+        warn "No media player found. Install one manually:"
+        warn "  mpv:  sudo apt install mpv  |  brew install mpv  |  pkg install mpv"
+        warn "  vlc:  sudo apt install vlc  |  brew install vlc"
     fi
 
     # Verify fzf
@@ -310,7 +289,7 @@ verify_installation() {
         failed=1
     fi
 
-    # Verify mpv
+    # Verify mpv (manual prerequisite)
     local player_ok=0
     for cmd in mpv vlc iina; do
         if command -v "$cmd" &>/dev/null; then
@@ -320,7 +299,7 @@ verify_installation() {
         fi
     done
     if (( player_ok == 0 )); then
-        warn "  ⚠ No media player found (mpv, vlc, or iina)"
+        warn "  ⚠ No media player found (install mpv, vlc, or iina manually)"
     fi
 
     # Verify fzf (optional)
