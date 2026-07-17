@@ -163,11 +163,16 @@ check_deps() {
     for cmd in curl jq openssl python3; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
-    local player_found=0
-    for cmd in mpv vlc iina; do
-        command -v "$cmd" &>/dev/null && player_found=1
-    done
-    (( player_found == 0 )) && missing+=("mpv/vlc/iina")
+
+    # ponytail: Android uses mpv-android via Play Store + intent launch,
+    # not a CLI binary in $PATH. Skip player check on Termux.
+    if [[ ! -d "/data/data/com.termux" ]]; then
+        local player_found=0
+        for cmd in mpv vlc iina; do
+            command -v "$cmd" &>/dev/null && player_found=1
+        done
+        (( player_found == 0 )) && missing+=("mpv/vlc/iina")
+    fi
 
     if (( ${#missing[@]} > 0 )); then
         ui_error "Missing: ${missing[*]}"
