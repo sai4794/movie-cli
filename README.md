@@ -149,53 +149,8 @@ Plugins extend movie-cli with new content sources.
 [{"id":"123","title":"Movie (2020)","type":"movie"}]
 
 # plugin_get_url returns JSON array:
-[{"quality":"1080","url":"https://...","size":"unknown","provider":"Name"}]
+[{"quality":"1080","url":"https://example.com/stream","size":"unknown","provider":"Name"}]
 ```
-
-## Architecture
-
-```
-movie-cli                  # Main entry point (arg parsing, pipeline)
-├── lib/
-│   ├── init.sh            # Globals, traps, portability wrappers
-│   ├── errors.sh          # Error handling, retry, safe curl
-│   ├── config.sh          # Config loading (key=value parser)
-│   ├── cache.sh           # SHA256-keyed TTL cache
-│   ├── ui.sh              # fzf/rofi/dmenu selection, spinner
-│   ├── player.sh          # mpv/vlc/iina wrapper + IPC
-│   └── history.sh         # JSONL watch history
-├── plugins/
-│   ├── cinestream.sh      # Cinemeta + Vidlink (zero-config)
-│   ├── movieblast.sh      # MovieBlast API (built-in creds)
-│   └── _template.sh       # Plugin template
-├── config/
-│   └── default.conf       # Default configuration
-└── tests/                 # bats-core test suite
-```
-
-## Development
-
-```bash
-# Run all tests
-tests/bats/bin/bats tests/
-
-# Run specific test
-tests/bats/bin/bats tests/test_core.sh
-
-# Lint with shellcheck
-shellcheck movie-cli lib/*.sh plugins/*.sh
-```
-
-## Platform Support
-
-| Platform | Status | Notes |
-|----------|--------|-------|
-| Linux (Debian/Ubuntu) | ✅ | Full support |
-| Linux (Fedora) | ✅ | Full support |
-| Linux (Arch) | ✅ | Full support |
-| macOS | ✅ | Uses sed -E, shasum |
-| Android (Termux) | ✅ | pkg install |
-| Windows (WSL2) | ✅ | WSL only |
 
 ## License
 
