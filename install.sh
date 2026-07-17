@@ -40,13 +40,102 @@ info()  { printf "${GREEN}[movie-cli]${RESET} %s\n" "$*"; }
 warn()  { printf "${YELLOW}[movie-cli]${RESET} %s\n" "$*"; }
 error() { printf "${RED}[movie-cli]${RESET} %s\n" "$*" >&2; }
 
+# Detect if running on Termux
+is_termux() {
+    [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]]
+}
+
+# Get OS-specific package name
+get_package_name() {
+    local cmd="$1"
+    local os_type="$2"
+    local pm_type="$3"
+
+    case "$os_type" in
+        termux)
+            case "$cmd" in
+                openssl)    echo "openssl-tool" ;;
+                python3)    echo "python" ;;
+                *)          echo "$cmd" ;;
+            esac
+            ;;
+        macos)
+            case "$cmd" in
+                python3)    echo "python3" ;;
+                socat)      echo "socat" ;;
+                *)          echo "$cmd" ;;
+            esac
+            ;;
+        linux)
+            case "$cmd" in
+                python3)
+                    case "$pm_type" in
+                        apt)    echo "python3" ;;
+                        dnf)    echo "python3" ;;
+                        pacman) echo "python" ;;
+                        *)      echo "python3" ;;
+                    esac
+                    ;;
+                *)          echo "$cmd" ;;
+            esac
+            ;;
+        *)
+            echo "$cmd"
+            ;;
+    esac
+}
+
+# Verify a command exists
+verify_command() {
+    local cmd="$1"
+    local package="${2:-$cmd}"
+    if ! command -v "$cmd" &>/dev/null; then
+        error "Missing: $cmd"
+        error "Install with: pkg install $package (Termux) or apt install $package (Linux)"
+        return 1
+    fi
+    return 0
+}
+
 # Detect package manager and install missing deps
 install_deps() {
     local to_install=()
+    local is_termux_env=0
+    local pm_type=""
 
-    # Core: curl, jq, python3, openssl, socat
-    for cmd in curl jq python3 openssl socat; do
-        command -v "$cmd" &>/dev/null || to_install+=("$cmd")
+    # Detect OS
+    local os_type="linux"
+    if is_termux; then
+        os_type="termux"
+        is_termux_env=1
+    elif [[ "$(uname)" == "Darwin" ]]; then
+        os_type="macos"
+    fi
+
+    # Detect package manager
+    local pm=""
+    if command -v pkg &>/dev/null; then pm="pkg"; pm_type="pkg"       # Termux
+    elif command -v apt-get &>/dev/null; then pm="apt-get"; pm_type="apt"
+    elif command -v dnf &>/dev/null; then pm="dnf"; pm_type="dnf"
+    elif command -v pacman &>/dev/null; then pm="pacman"; pm_type="pacman"
+    elif command -v brew &>/dev/null; then pm="brew"; pm_type="brew"
+    fi
+
+    # Core dependencies (command names to check)
+    local core_deps=(curl jq socat)
+    if [[ "$os_type" == "termux" ]]; then
+        core_deps+=(python openssl)
+    else
+        core_deps+=(python3 openssl)
+    fi
+
+    # Check each core dependency
+    for cmd in "${core_deps[@]}"; do
+        local pkg_name
+        pkg_name=$(get_package_name "$cmd" "$os_type" "$pm_type")
+        if ! command -v "$cmd" &>/dev/null; then
+            to_install+=("$pkg_name")
+        fi
     done
 
     # Player: mpv preferred
@@ -61,15 +150,6 @@ install_deps() {
 
     (( ${#to_install[@]} == 0 )) && return 0
 
-    # Detect package manager (Termux: pkg before apt-get, both exist)
-    local pm=""
-    if command -v pkg &>/dev/null; then pm="pkg"  # Termux
-    elif command -v apt-get &>/dev/null; then pm="apt"
-    elif command -v dnf &>/dev/null; then pm="dnf"
-    elif command -v pacman &>/dev/null; then pm="pacman"
-    elif command -v brew &>/dev/null; then pm="brew"
-    fi
-
     if [[ -z "$pm" ]]; then
         warn "Cannot auto-install: ${to_install[*]}"
         warn "Install manually with your package manager."
@@ -78,9 +158,9 @@ install_deps() {
 
     info "Installing missing dependencies: ${to_install[*]}"
     case "$pm" in
-        apt)    sudo apt-get update -qq && sudo apt-get install -y -qq "${to_install[@]}" ;;
-        dnf)    sudo dnf install -y -q "${to_install[@]}" ;;
-        pacman) sudo pacman -S --noconfirm "${to_install[@]}" ;;
+        apt-get) sudo apt-get update -qq && sudo apt-get install -y -qq "${to_install[@]}" ;;
+        dnf)     sudo dnf install -y -q "${to_install[@]}" ;;
+        pacman)  sudo pacman -S --noconfirm "${to_install[@]}" ;;
         brew)
             # ponytail: mpv needs full Xcode on macOS, not just CLT
             local brew_list=() need_mpv=0
@@ -100,9 +180,160 @@ install_deps() {
                 fi
             fi
             ;;
-        pkg)    pkg install -y "${to_install[@]}" ;;
+        pkg)     pkg install -y "${to_install[@]}" ;;
     esac
+
+    # Verify all dependencies after installation
+    local failed=0
+    for cmd in "${core_deps[@]}"; do
+        local pkg_name
+        pkg_name=$(get_package_name "$cmd" "$os_type" "$pm_type")
+        if ! command -v "$cmd" &>/dev/null; then
+            error "Failed to install: $cmd"
+            error "Package: $pkg_name"
+            error "Try: pkg install $pkg_name (Termux) or apt install $pkg_name (Linux)"
+            failed=1
+        fi
+    done
+
+    # Verify player
+    local player_ok=0
+    for cmd in mpv vlc iina; do
+        command -v "$cmd" &>/dev/null && player_ok=1
+    done
+    if (( player_ok == 0 )); then
+        warn "No media player found. Install mpv: pkg install mpv (Termux) or apt install mpv (Linux)"
+    fi
+
+    # Verify fzf
+    if ! command -v fzf &>/dev/null; then
+        warn "fzf not installed (optional). Install: pkg install fzf (Termux) or apt install fzf (Linux)"
+    fi
+
+    (( failed )) && exit 1
+    return 0
 }
+
+# Update PATH in shell profile
+update_path() {
+    local install_dir="$1"
+    local shell_profile=""
+
+    # Determine which shell profile to update
+    if [[ -n "${SHELL:-}" ]]; then
+        case "$(basename "$SHELL")" in
+            bash) shell_profile="$HOME/.bashrc" ;;
+            zsh)  shell_profile="$HOME/.zshrc" ;;
+            *)    shell_profile="$HOME/.bashrc" ;;
+        esac
+    else
+        shell_profile="$HOME/.bashrc"
+    fi
+
+    # Check if already in PATH
+    if [[ ":$PATH:" == *":$install_dir:"* ]]; then
+        return 0
+    fi
+
+    # Check if already in profile (avoid duplicates)
+    if [[ -f "$shell_profile" ]] && grep -qF "$install_dir" "$shell_profile"; then
+        info "PATH already configured in $shell_profile"
+        info "Run: source $shell_profile"
+        return 0
+    fi
+
+    # Append to profile
+    {
+        echo ""
+        echo "# movie-cli PATH"
+        echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    } >> "$shell_profile"
+
+    info "Updated PATH in $shell_profile"
+    info "Run: source $shell_profile"
+    return 0
+}
+
+# Post-install verification
+verify_installation() {
+    local failed=0
+    local is_termux_env=0
+
+    if is_termux; then
+        is_termux_env=1
+    fi
+
+    info "Verifying installation..."
+
+    # Verify movie-cli
+    if [[ -x "$INSTALL_DIR/movie-cli" ]]; then
+        info "  ✓ movie-cli"
+    else
+        error "  ✗ movie-cli not found at $INSTALL_DIR/movie-cli"
+        failed=1
+    fi
+
+    # Verify jq
+    if command -v jq &>/dev/null; then
+        info "  ✓ jq"
+    else
+        error "  ✗ jq not found"
+        failed=1
+    fi
+
+    # Verify python (python3 on Linux/macOS, python on Termux)
+    local python_cmd="python3"
+    if (( is_termux_env )); then
+        python_cmd="python"
+    fi
+    if command -v "$python_cmd" &>/dev/null; then
+        info "  ✓ $python_cmd"
+    else
+        error "  ✗ $python_cmd not found"
+        failed=1
+    fi
+
+    # Verify openssl
+    if command -v openssl &>/dev/null; then
+        info "  ✓ openssl"
+    else
+        error "  ✗ openssl not found"
+        error "  Install: pkg install openssl-tool (Termux) or apt install openssl (Linux)"
+        failed=1
+    fi
+
+    # Verify socat
+    if command -v socat &>/dev/null; then
+        info "  ✓ socat"
+    else
+        error "  ✗ socat not found"
+        failed=1
+    fi
+
+    # Verify mpv
+    local player_ok=0
+    for cmd in mpv vlc iina; do
+        if command -v "$cmd" &>/dev/null; then
+            info "  ✓ $cmd"
+            player_ok=1
+            break
+        fi
+    done
+    if (( player_ok == 0 )); then
+        warn "  ⚠ No media player found (mpv, vlc, or iina)"
+    fi
+
+    # Verify fzf (optional)
+    if command -v fzf &>/dev/null; then
+        info "  ✓ fzf"
+    else
+        warn "  ⚠ fzf not found (optional)"
+    fi
+
+    (( failed )) && exit 1
+    return 0
+}
+
 # Main install
 main() {
     info "Installing movie-cli..."
@@ -149,15 +380,14 @@ main() {
     info "Installed to $INSTALL_DIR/movie-cli"
     info "Config at $CONF_DIR/movie-cli.conf"
 
-    # Check PATH
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        warn "$INSTALL_DIR is not in your PATH."
-        warn "Add this to your shell profile:"
-        warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    fi
+    # Update PATH if needed
+    update_path "$INSTALL_DIR"
 
-    # Check dependencies
+    # Install dependencies
     install_deps
+
+    # Post-install verification
+    verify_installation
 
     info "Done! Run: movie-cli --help"
 
