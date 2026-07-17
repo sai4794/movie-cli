@@ -88,8 +88,8 @@ sort_streams() {
     local json="$1"
     printf '%s' "$json" | jq -c '
         def quality_rank:
-            if (.quality == "4K" or .quality == "2160p") then 0
-            elif (.quality == "2K" or .quality == "1440p") then 1
+            if (.quality == "4K" or .quality == "2160p" or .quality == "2160") then 0
+            elif (.quality == "2K" or .quality == "1440p" or .quality == "1440") then 1
             elif (.quality == "1080" or .quality == "1080p") then 2
             elif (.quality == "720" or .quality == "720p") then 3
             elif (.quality == "480" or .quality == "480p") then 4

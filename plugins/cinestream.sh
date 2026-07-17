@@ -255,16 +255,38 @@ plugin_get_url() {
                 printf '%s' "$addon_res" | jq -c '
                     [ .streams[] | select(.url != null) |
                       (.title // .description // "") as $t | {
-                        quality: (if ($t | test("(?i)1080p|1080")) then "1080" elif ($t | test("(?i)720p|720")) then "720" elif ($t | test("(?i)480p|480")) then "480" elif ($t | test("(?i)4k|2160p|2160")) then "4K" else "auto" end),
+                        quality: (if ($t | test("(?i)4k|2160p|2160")) then "4K"
+                                  elif ($t | test("(?i)1440p|1440|\\b2k\\b")) then "1440"
+                                  elif ($t | test("(?i)1080p|1080")) then "1080"
+                                  elif ($t | test("(?i)720p|720")) then "720"
+                                  elif ($t | test("(?i)480p|480")) then "480"
+                                  elif ($t | test("(?i)360p|360")) then "360"
+                                  elif ($t | test("(?i)240p|240")) then "240"
+                                  elif ($t | test("(?i)144p|144")) then "144"
+                                  else "auto" end),
                         url: .url,
                         size: (try (($t | match("[0-9]+(?:\\.[0-9]+)?\\s*(?:GB|MB|gb|mb)"; "i") | .string) // "unknown") catch "unknown"),
                         provider: ((.name // "Addon") | gsub("\\n"; " ")),
-                        lang: (if ($t | test("(?i)telugu|\\bTel\\b")) then "telugu"
-                               elif ($t | test("(?i)hindi|bollywood")) then "hindi"
+                        lang: (if ($t | test("(?i)\\btelugu\\b|\\btel\\b")) then "telugu"
+                               elif ($t | test("(?i)\\bhindi\\b|bollywood")) then "hindi"
                                elif ($t | test("(?i)\\btamil\\b")) then "tamil"
-                               elif ($t | test("(?i)kannada")) then "kannada"
-                               elif ($t | test("(?i)malayalam")) then "malayalam"
-                               elif ($t | test("(?i)english")) then "english"
+                               elif ($t | test("(?i)\\bkannada\\b")) then "kannada"
+                               elif ($t | test("(?i)\\bmalayalam\\b")) then "malayalam"
+                               elif ($t | test("(?i)\\benglish\\b|eng\\b")) then "english"
+                               elif ($t | test("(?i)\\boriginal\\b|\\borg\\b")) then "original"
+                               elif ($t | test("(?i)\\bspanish\\b|\\bespañol\\b")) then "spanish"
+                               elif ($t | test("(?i)\\bfrench\\b|\\bfrançais\\b")) then "french"
+                               elif ($t | test("(?i)\\bgerman\\b|\\bdeutsch\\b")) then "german"
+                               elif ($t | test("(?i)\\bportuguese\\b|\\bportuguês\\b")) then "portuguese"
+                               elif ($t | test("(?i)\\brussian\\b|\\bрусский\\b")) then "russian"
+                               elif ($t | test("(?i)\\barabic\\b|\\bعربي\\b")) then "arabic"
+                               elif ($t | test("(?i)\\bjapanese\\b|\\b日本語\\b")) then "japanese"
+                               elif ($t | test("(?i)\\bkorean\\b|\\b한국어\\b")) then "korean"
+                               elif ($t | test("(?i)\\bchinese\\b|\\b中文\\b")) then "chinese"
+                               elif ($t | test("(?i)\\bturkish\\b|\\btürkçe\\b")) then "turkish"
+                               elif ($t | test("(?i)\\bitalian\\b|\\bitaliano\\b")) then "italian"
+                               elif ($t | test("(?i)\\bdubbed\\b")) then "dubbed"
+                               elif ($t | test("(?i)\\bsubtitled\\b|\\bsub\\b")) then "subtitled"
                                else "unknown" end)
                     } ]
                 ' 2>/dev/null > "$tmp_dir/addon_${addon_idx}.json"
@@ -357,11 +379,12 @@ plugin_get_url() {
     done
     rm -rf "$tmp_dir"
 
-    # Sort: known languages first (telugu > hindi > tamil > kannada > malayalam > english), unknown last
+    # Sort: known languages first (telugu > hindi > tamil > kannada > malayalam > original > english), unknown last
     merged_json=$(printf '%s' "$merged_json" | jq '
         sort_by(
             if .lang == "unknown" then 1
             elif .lang == "english" then 2
+            elif .lang == "original" then 3
             else 0
             end
         )
