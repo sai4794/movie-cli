@@ -12,6 +12,11 @@ validate_player() {
     if [[ " $_VALID_PLAYERS " != *" $player "* ]]; then
         die_player "Invalid player: $player (allowed: $_VALID_PLAYERS)"
     fi
+    # ponytail: Android uses mpv-android via Play Store + intent launch,
+    # not a CLI binary in $PATH. Skip binary check on Termux.
+    if [[ -d "/data/data/com.termux" ]]; then
+        return 0
+    fi
     if ! command -v "$player" &>/dev/null; then
         die_deps "Player not found: $player"
     fi
