@@ -83,10 +83,10 @@ The install script auto-installs core dependencies (curl, jq, python3, openssl, 
 - Install mpv: `brew install mpv`
 
 **Android (Termux)**
-- Install Termux from F-Droid (not Play Store — outdated version)
+- Install from Play Store
 - Uses `python` instead of `python3`
 - Uses `openssl-tool` instead of `openssl`
-- Install mpv: `pkg install mpv`
+- Install mpv from Play Store
 - For best experience, use Termux:X11 or run in a terminal emulator
 
 ## Usage
