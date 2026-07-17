@@ -9,5 +9,5 @@ Why is this needed?
 ## Checklist
 
 - [ ] Tests pass (`tests/bats/bin/bats tests/`)
-- [ ] Shellcheck clean (`shellcheck movie-cli lib/*.sh plugins/*.sh`)
+- [ ] Shellcheck clean (`shellcheck movie-cli lib/*.sh`)
 - [ ] Documentation updated if needed

@@ -13,8 +13,8 @@ Terminal-based movie/series search and play tool. Inspired by [ani-cli](https://
 $ movie-cli "inception"
 Fetching results...
 ? Select:
-  1. Inception (2010) [CineStream]
-  2. Inception [MovieBlast]
+  1. Inception (2010)
+  2. Inception
 > 1
 
 Playing: Inception (2010)
@@ -25,9 +25,8 @@ Playing: Inception (2010)
 - **Search by name** — find movies and series instantly
 - **Play in mpv** — high-quality video playback with resume
 - **Watch history** — log and continue watching (`-c`)
-- **Plugin system** — extend with new sources
 - **Cross-platform** — Linux, macOS, Android (Termux)
-- **Zero-config** — works out of the box with CineStream
+- **Zero-config** — works out of the box
 
 ## Installation
 
@@ -55,7 +54,7 @@ chmod +x movie-cli
 | `mpv` | Yes | Video player (vlc/iina also work) |
 | `fzf` | No | Fuzzy selection (falls back to numbered list) |
 | `python3` | Yes | Regex extraction, embed resolution |
-| `openssl` | Yes | MovieBlast URL signing |
+| `openssl` | Yes | URL signing |
 | `socat` | Yes | MPV progress tracking |
 
 The install script auto-installs missing dependencies via your package manager (apt/dnf/pacman/brew/termux).
@@ -89,7 +88,6 @@ movie-cli -s "inception"
 
 | Flag | Description |
 |------|-------------|
-| `-p, --plugin NAME` | Use specific plugin (default: auto) |
 | `-q, --quality LEVEL` | Min quality: 480, 720, 1080 (default: 720) |
 | `-c, --continue` | Continue watching last entry |
 | `-l, --log` | View watch history |
@@ -97,7 +95,6 @@ movie-cli -s "inception"
 | `-s, --search-only` | Output results without playing |
 | `-S, --select N` | Auto-select Nth result |
 | `--no-detach` | Don't detach player |
-| `--list-plugins` | List available plugins |
 | `--check-deps` | Verify all dependencies |
 | `--no-cache` | Bypass cache |
 | `--clear-cache` | Clear all cached data |
@@ -117,40 +114,12 @@ PLAYER=mpv
 # Default quality: 480, 720, 1080
 QUALITY=720
 
-# Plugin: auto (try all), or specific name
-PLUGIN=auto
-
 # Verbose/debug output (0 or 1)
 VERBOSE=0
 DEBUG=0
 ```
 
 Priority: CLI flags > env vars > config file > built-in defaults.
-
-## Plugins
-
-Plugins extend movie-cli with new content sources.
-
-### Available
-
-| Plugin | Source | Auth | Content |
-|--------|--------|------|---------|
-| CineStream | Cinemeta + Vidlink | None | Movies + Series |
-| MovieBlast | MovieBlast API | Built-in | Movies + Series |
-
-### Creating a Plugin
-
-1. Copy `plugins/_template.sh`
-2. Implement `plugin_search()` and `plugin_get_url()`
-3. Place in `plugins/` or `~/.config/movie-cli/plugins/`
-
-```bash
-# plugin_search returns JSON array:
-[{"id":"123","title":"Movie (2020)","type":"movie"}]
-
-# plugin_get_url returns JSON array:
-[{"quality":"1080","url":"https://example.com/stream","size":"unknown","provider":"Name"}]
-```
 
 ## License
 
@@ -159,6 +128,5 @@ Plugins extend movie-cli with new content sources.
 ## Credits
 
 - [ani-cli](https://github.com/pystardust/ani-cli) — inspiration
-- [Cinemeta](https://www.stremio.com) — metadata provider
+- [Cinemeta](https://www.stremio.com) — metadata
 - [Vidlink](https://vidlink.pro) — stream resolver
-- [Cloudstream MovieBlast](https://cloudstream.miraheze.org) — MovieBlast extension source

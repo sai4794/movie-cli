@@ -14,7 +14,6 @@ If you discover a security vulnerability, please report it responsibly:
 In scope:
 - Command injection via user input
 - Path traversal in file operations
-- Plugin abuse (malicious plugins)
 - Credential leakage
 - Cache poisoning
 
