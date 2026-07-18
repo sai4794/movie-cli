@@ -214,12 +214,6 @@ By using `movie-cli`, you acknowledge that you are solely responsible for:
 - Following the terms of service of any third-party service you access.
 - Determining whether the content you access is lawful in your jurisdiction.
 
-## No Warranty
-
-This software is provided **"AS IS"**, without warranties or guarantees of any kind, express or implied.
-
-The developers shall not be liable for any direct, indirect, incidental, special, consequential, or other damages arising from the use or inability to use this software.
-
 ## Trademark Notice
 
 All product names, service names, trademarks, logos, and registered trademarks mentioned by this project belong to their respective owners.
