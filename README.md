@@ -157,8 +157,6 @@ Priority: CLI flags > env vars > config file > built-in defaults.
 ## Credits
 
 - [ani-cli](https://github.com/pystardust/ani-cli) — inspiration
-- [Cinemeta](https://www.stremio.com) — metadata
-- [Vidlink](https://vidlink.pro) — stream resolver
 
 ---
 
