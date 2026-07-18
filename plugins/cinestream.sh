@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cinestream.sh — CineStream plugin for movie-cli
-# Searches Cinemeta and resolves links via Vidlink or PlayImdb
+# Searches Cinemeta and resolves links via Stremio addons, Vidlink, or PlayImdb
 
 # ═══════════════════════════════════════════════════════════════
 # Plugin Metadata
@@ -247,14 +247,46 @@ plugin_get_url() {
         # Strip trailing /manifest.json if present
         addon_url="${addon_url%/manifest.json}"
 
+        # Validate addon URL format — reject malformed URLs
+        if [[ ! "$addon_url" =~ ^https?://[^[:space:]/]+$ ]]; then
+            warn "Skipping malformed addon URL: $addon_url"
+            continue
+        fi
+
         (
             local addon_api="${addon_url}/stream/${type}/${id}.json"
-            local addon_res
-            addon_res=$(curl -s $_CURL_TIMEOUT "$addon_api")
-            if printf '%s' "$addon_res" | jq -e .streams >/dev/null 2>&1; then
+            local addon_res addon_http_code
+            local attempt_start
+            attempt_start=$(date +%s%N 2>/dev/null || date +%s)
+            local addon_label="${addon_url#https://}"
+            addon_label="${addon_label#http://}"
+            debug "Addon request started: $addon_label"
+
+            # Fetch with retry — 2 attempts, exponential backoff (1s, 2s)
+            local attempt=1 addon_fetched=0
+            while (( attempt <= 2 )); do
+                addon_res=$(curl -s $_CURL_TIMEOUT \
+                    -H "User-Agent: movie-cli/$VERSION" \
+                    "$addon_api" 2>/dev/null) && addon_fetched=1 || addon_fetched=0
+
+                if [[ "$addon_fetched" -eq 1 ]] && \
+                   printf '%s' "$addon_res" | jq -e .streams >/dev/null 2>&1; then
+                    break
+                fi
+
+                # Only retry transient failures — if we got a response, no point retrying
+                if [[ "$addon_fetched" -eq 0 ]] && (( attempt < 2 )); then
+                    debug "Addon $addon_label attempt $attempt failed, retrying in 1s..."
+                    sleep 1
+                fi
+                (( attempt++ ))
+            done
+
+            if [[ "$addon_fetched" -eq 1 ]] && \
+               printf '%s' "$addon_res" | jq -e .streams >/dev/null 2>&1; then
                 printf '%s' "$addon_res" | jq -c '
                     [ .streams[] | select(.url != null) |
-                      (.title // .description // "") as $t | {
+                      ((.title // "") + " " + (.description // "") + " " + (.name // "")) as $t | {
                         quality: (if ($t | test("(?i)4k|2160p|2160")) then "4K"
                                   elif ($t | test("(?i)1440p|1440|\\b2k\\b")) then "1440"
                                   elif ($t | test("(?i)1080p|1080")) then "1080"
@@ -290,6 +322,25 @@ plugin_get_url() {
                                else "unknown" end)
                     } ]
                 ' 2>/dev/null > "$tmp_dir/addon_${addon_idx}.json"
+                local stream_count
+                stream_count=$(jq 'length' "$tmp_dir/addon_${addon_idx}.json" 2>/dev/null || echo 0)
+                local elapsed_ms=0
+                if [[ -n "$attempt_start" ]]; then
+                    local now_ns
+                    now_ns=$(date +%s%N 2>/dev/null || date +%s)
+                    elapsed_ms=$(( (now_ns - attempt_start) / 1000000 ))
+                    [[ "$elapsed_ms" -lt 0 ]] && elapsed_ms=0
+                fi
+                debug "Addon $addon_label succeeded: ${stream_count} streams (${elapsed_ms}ms)"
+            else
+                local elapsed_ms=0
+                if [[ -n "$attempt_start" ]]; then
+                    local now_ns
+                    now_ns=$(date +%s%N 2>/dev/null || date +%s)
+                    elapsed_ms=$(( (now_ns - attempt_start) / 1000000 ))
+                    [[ "$elapsed_ms" -lt 0 ]] && elapsed_ms=0
+                fi
+                debug "Addon $addon_label failed (${elapsed_ms}ms)"
             fi
         ) &
         pids+=($!)
