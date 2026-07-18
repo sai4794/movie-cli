@@ -15,6 +15,6 @@ All notable changes to movie-cli will be documented in this file.
 - Cross-platform installer with auto-dependency install
 - fzf/rofi/dmenu UI selection with numbered fallback
 - Quality sorting and stream verification
-- bats-core test suite (47 tests)
+- bats-core test suite (55 tests)
 - Install script for Linux, macOS, Termux
 - Uninstall script

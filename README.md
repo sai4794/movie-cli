@@ -1,15 +1,32 @@
 # movie-cli
 
-[![CI](https://github.com/sai4794/movie-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sai4794/movie-cli/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![ShellCheck](https://img.shields.io/badge/ShellCheck-passing-brightgreen)](https://www.shellcheck.net/)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/sai4794/movie-cli/releases)
 
 Terminal-based movie/series search and play tool. Inspired by [ani-cli](https://github.com/pystardust/ani-cli) for anime.
 
+## Table of Contents
+
+- [Demo](#demo)
+- [Features](#features)
+- [Installation](#installation)
+- [Supported Platforms](#supported-platforms)
+- [Usage](#usage)
+- [Command Reference](#command-reference)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+- [Inspiration](#inspiration)
+- [Safety Notice](#safety-notice)
+- [Third-Party Plugins](#third-party-plugins)
+- [Privacy Notice](#privacy-notice)
+- [Legal Disclaimer](#legal-disclaimer)
+- [Security](#security)
+
 ## Demo
 
-```
+```text
 $ movie-cli "inception"
 Fetching results...
 ? Select:
@@ -63,30 +80,33 @@ The install script auto-installs core dependencies (curl, jq, python3, openssl, 
 
 | Platform | Status | Package Manager | Notes |
 |----------|--------|-----------------|-------|
-| Linux (Debian/Ubuntu) | ✅ Supported | apt | Full support |
-| Linux (Fedora) | ✅ Supported | dnf | Full support |
-| Linux (Arch) | ✅ Supported | pacman | Full support |
-| macOS | ✅ Supported | brew | Requires Bash 4+ (installer auto-upgrades) |
-| Android (Termux) | ✅ Supported | pkg | Install from F-Droid or termux.dev |
+| Linux (Debian/Ubuntu) | Supported | apt | Full support |
+| Linux (Fedora) | Supported | dnf | Full support |
+| Linux (Arch) | Supported | pacman | Full support |
+| macOS | Supported | brew | Requires Bash 4+ (installer auto-upgrades) |
+| Android (Termux) | Supported | pkg | Install from F-Droid or termux.dev |
 
 ### Platform-Specific Notes
 
 **Linux**
+
 - All major distributions supported (Debian, Ubuntu, Fedora, Arch, etc.)
 - Uses `python3` for regex extraction
 - Install mpv: `sudo apt install mpv` or `sudo dnf install mpv`
 
 **macOS**
+
 - Requires Bash 4+ (macOS ships with Bash 3.2)
 - The installer will automatically upgrade Bash via Homebrew if needed
 - Uses `python3` for regex extraction
 - Install mpv: `brew install mpv`
 
 **Android (Termux)**
-- Install from Play Store
+
+- Install Termux from F-Droid or [termux.dev](https://termux.dev)
 - Uses `python` instead of `python3`
 - Uses `openssl-tool` instead of `openssl`
-- Install mpv from Play Store
+- Install mpv from F-Droid (mpv-android)
 
 ## Usage
 
@@ -123,12 +143,12 @@ movie-cli -s "inception"
 | `-D, --delete-history` | Delete watch history |
 | `-s, --search-only` | Output results without playing |
 | `-S, --select N` | Auto-select Nth result |
-| `--no-detach` | Don't detach player |
+| `--no-detach` | Keep terminal attached to player; script waits for player to exit before returning |
 | `--check-deps` | Verify all dependencies |
 | `--no-cache` | Bypass cache |
 | `--clear-cache` | Clear all cached data |
-| `--debug` | Enable debug logging |
-| `--quiet` | Suppress non-essential output |
+| `--debug` | Enable debug logging (logs written to `~/.local/share/movie-cli/movie-cli.log`) |
+| `--quiet` | Suppress non-essential output (progress spinners, info messages) |
 | `-v, --version` | Show version |
 | `-h, --help` | Show help |
 
@@ -150,6 +170,55 @@ DEBUG=0
 
 Priority: CLI flags > env vars > config file > built-in defaults.
 
+## Troubleshooting
+
+**Unsupported bash version (macOS)**
+
+macOS ships with Bash 3.2. The installer auto-upgrades via Homebrew. If it fails:
+
+```bash
+brew install bash
+```
+
+Verify with `bash --version` (need 4.0+).
+
+**No supported video player installed**
+
+movie-cli requires mpv, vlc, or iina. Install one:
+
+```bash
+# Linux
+sudo apt install mpv
+
+# macOS
+brew install mpv
+```
+
+**No streams found**
+
+- Try a different title or check spelling
+- Try a different quality level: `movie-cli -q 480 "title"`
+- Third-party plugins may be temporarily unavailable — try again later
+- Clear cache: `movie-cli --clear-cache`
+
+**Network failures**
+
+- Check your internet connection
+- Try again in a few minutes (third-party services may be down)
+- Run with `--debug` to inspect detailed error output
+
+**Plugin failures**
+
+- Plugins depend on third-party services that may change or go offline
+- Run with `--debug` to see which plugin failed
+- Check if the upstream service is available
+
+**Android playback issues**
+
+- Ensure mpv-android is installed from F-Droid
+- Ensure mpv and movie-cli are both installed in the same Termux environment
+- Try launching mpv directly to verify it works
+
 ## License
 
 [MIT](LICENSE)
@@ -158,9 +227,7 @@ Priority: CLI flags > env vars > config file > built-in defaults.
 
 - [ani-cli](https://github.com/pystardust/ani-cli) — inspiration
 
----
-
-## ⚠️ Safety Notice
+## Safety Notice
 
 `movie-cli` provides access to streams exposed by third-party plugins and services. These sources are not operated, controlled, or verified by this project.
 
@@ -170,14 +237,7 @@ Before using any stream, users should be aware of the following:
 - Streams may expose your IP address or other network information to third-party servers.
 - The availability, quality, security, and safety of streams cannot be guaranteed.
 - Some streaming sources may violate the laws, regulations, copyrights, or terms of service applicable in your country or region.
-- Users are solely responsible for ensuring that their use of any streaming source complies with applicable laws.
 - Use of third-party streaming sources is entirely at your own risk.
-
-## Content Disclaimer
-
-`movie-cli` does not host, upload, store, distribute, or control any media files, streaming servers, or copyrighted content.
-
-The project only provides a command-line interface capable of interacting with independent third-party plugins and services.
 
 ## Third-Party Plugins
 
@@ -205,21 +265,19 @@ Those services may receive information such as:
 
 Review the privacy practices of any service you choose to use.
 
-## User Responsibility
+## Legal Disclaimer
 
-By using `movie-cli`, you acknowledge that you are solely responsible for:
+`movie-cli` does not host, upload, store, distribute, or control any media files, streaming servers, or copyrighted content. The project only provides a command-line interface capable of interacting with independent third-party plugins and services. All media content is obtained from independent third-party sources.
 
-- Complying with applicable laws and regulations.
-- Respecting copyrights and intellectual property rights.
-- Following the terms of service of any third-party service you access.
-- Determining whether the content you access is lawful in your jurisdiction.
+By using `movie-cli`, you acknowledge that:
 
-## Trademark Notice
+- You are solely responsible for complying with applicable laws and regulations.
+- You are solely responsible for respecting copyrights and intellectual property rights.
+- You are solely responsible for following the terms of service of any third-party service you access.
+- You assume full responsibility for how you use this software.
 
-All product names, service names, trademarks, logos, and registered trademarks mentioned by this project belong to their respective owners.
+All product names, service names, trademarks, logos, and registered trademarks mentioned by this project belong to their respective owners. Their use is for identification purposes only and does not imply endorsement, sponsorship, partnership, or affiliation.
 
-Their use is for identification purposes only and does not imply endorsement, sponsorship, partnership, or affiliation.
+## Security
 
-## Final Disclaimer
-
-> The developers of `movie-cli` do not host, own, distribute, control, or endorse any media content or streaming servers. All media content is obtained from independent third-party sources. Users assume full responsibility for how they use this software and for complying with all applicable laws, regulations, and third-party terms of service.
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
