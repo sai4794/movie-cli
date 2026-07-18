@@ -225,6 +225,8 @@ plugin_get_url() {
     # ponytail: superflix removed (404 since 2025). Add back when reachable.
     addon_list+=("https://desiflix.stremioaddon.workers.dev")
     addon_list+=("https://addon.notorrent2.workers.dev")
+    addon_list+=("https://pengu.uk")
+    addon_list+=("https://webstreamrmbg.onrender.com")
 
 
     # Load custom Stremio Addon configurations from settings
@@ -236,6 +238,10 @@ plugin_get_url() {
             addon_list+=("$custom_url")
         done
     fi
+
+    # Track addons that fail during this request — skip subsequent attempts
+    local _failed_addons_file="$tmp_dir/.failed_addons"
+    : > "$_failed_addons_file"
 
     local addon_idx=0
     for addon_url in "${addon_list[@]}"; do
@@ -250,6 +256,14 @@ plugin_get_url() {
         # Validate addon URL format — reject malformed URLs
         if [[ ! "$addon_url" =~ ^https?://[^[:space:]/]+$ ]]; then
             warn "Skipping malformed addon URL: $addon_url"
+            continue
+        fi
+
+        # Skip addons that already failed during this request
+        local _addon_skip_check="${addon_url#https://}"
+        _addon_skip_check="${_addon_skip_check#http://}"
+        if grep -qF "$_addon_skip_check" "$_failed_addons_file" 2>/dev/null; then
+            debug "Skipping previously failed addon: $_addon_skip_check"
             continue
         fi
 
@@ -341,6 +355,7 @@ plugin_get_url() {
                     [[ "$elapsed_ms" -lt 0 ]] && elapsed_ms=0
                 fi
                 debug "Addon $addon_label failed (${elapsed_ms}ms)"
+                printf '%s\n' "$addon_label" >> "$_failed_addons_file"
             fi
         ) &
         pids+=($!)
