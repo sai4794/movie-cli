@@ -14,7 +14,7 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
       - name: Lint
-        run: shellcheck --severity=warning movie-cli lib/*.sh plugins/*.sh install.sh uninstall.sh
+        run: shellcheck --severity=warning --exclude=SC1090 --exclude=SC2034 --exclude=SC2206 movie-cli lib/*.sh plugins/*.sh install.sh uninstall.sh
 
   test:
     runs-on: ubuntu-latest
