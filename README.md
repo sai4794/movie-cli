@@ -160,3 +160,75 @@ Priority: CLI flags > env vars > config file > built-in defaults.
 - [ani-cli](https://github.com/pystardust/ani-cli) — inspiration
 - [Cinemeta](https://www.stremio.com) — metadata
 - [Vidlink](https://vidlink.pro) — stream resolver
+
+---
+
+## ⚠️ Safety Notice
+
+`movie-cli` provides access to streams exposed by third-party plugins and services. These sources are not operated, controlled, or verified by this project.
+
+Before using any stream, users should be aware of the following:
+
+- Third-party streams may contain malicious, misleading, or unsafe content.
+- Streams may expose your IP address or other network information to third-party servers.
+- The availability, quality, security, and safety of streams cannot be guaranteed.
+- Some streaming sources may violate the laws, regulations, copyrights, or terms of service applicable in your country or region.
+- Users are solely responsible for ensuring that their use of any streaming source complies with applicable laws.
+- Use of third-party streaming sources is entirely at your own risk.
+
+## Content Disclaimer
+
+`movie-cli` does not host, upload, store, distribute, or control any media files, streaming servers, or copyrighted content.
+
+The project only provides a command-line interface capable of interacting with independent third-party plugins and services.
+
+## Third-Party Plugins
+
+Plugins included with or developed for `movie-cli` communicate with independent third-party services.
+
+These services may:
+
+- Change without notice
+- Become unavailable
+- Return inaccurate information
+- Stop working completely
+
+The developers of `movie-cli` do not control or guarantee the availability, reliability, legality, or accuracy of any third-party service.
+
+## Privacy Notice
+
+When using third-party plugins, your device communicates directly with external servers.
+
+Those services may receive information such as:
+
+- Your IP address
+- HTTP request headers
+- Network metadata
+- Other information normally transmitted during network requests
+
+Review the privacy practices of any service you choose to use.
+
+## User Responsibility
+
+By using `movie-cli`, you acknowledge that you are solely responsible for:
+
+- Complying with applicable laws and regulations.
+- Respecting copyrights and intellectual property rights.
+- Following the terms of service of any third-party service you access.
+- Determining whether the content you access is lawful in your jurisdiction.
+
+## No Warranty
+
+This software is provided **"AS IS"**, without warranties or guarantees of any kind, express or implied.
+
+The developers shall not be liable for any direct, indirect, incidental, special, consequential, or other damages arising from the use or inability to use this software.
+
+## Trademark Notice
+
+All product names, service names, trademarks, logos, and registered trademarks mentioned by this project belong to their respective owners.
+
+Their use is for identification purposes only and does not imply endorsement, sponsorship, partnership, or affiliation.
+
+## Final Disclaimer
+
+> The developers of `movie-cli` do not host, own, distribute, control, or endorse any media content or streaming servers. All media content is obtained from independent third-party sources. Users assume full responsibility for how they use this software and for complying with all applicable laws, regulations, and third-party terms of service.
