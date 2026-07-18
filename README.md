@@ -87,7 +87,6 @@ The install script auto-installs core dependencies (curl, jq, python3, openssl, 
 - Uses `python` instead of `python3`
 - Uses `openssl-tool` instead of `openssl`
 - Install mpv from Play Store
-- For best experience, use Termux:X11 or run in a terminal emulator
 
 ## Usage
 
