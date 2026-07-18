@@ -407,10 +407,9 @@ search_and_play() {
             clear 2>/dev/null || true
 
             status_msg "Resolving streams..."
-            qualities_json=$(plugin_get_url "$ep_id" "$quality" 2>/dev/null)
-            qualities_json=$(sort_streams "$qualities_json")
-            qualities_json=$(verify_streams "$qualities_json")
-                        spinner_stop
+             qualities_json=$(plugin_get_url "$ep_id" "$quality" 2>/dev/null)
+             qualities_json=$(sort_streams "$qualities_json")
+                         spinner_stop
             [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for: $selected_title - $ep_title"
 
             # Stream selection for series episodes
@@ -507,7 +506,6 @@ search_and_play() {
     local qualities_json
     qualities_json=$(plugin_get_url "$selected_id" "$quality")
     qualities_json=$(sort_streams "$qualities_json")
-    qualities_json=$(verify_streams "$qualities_json")
     prof_end
         spinner_stop
 
@@ -641,7 +639,6 @@ main() {
         local qualities_json
         qualities_json=$(plugin_get_url "$resume_id" "$quality")
         qualities_json=$(sort_streams "$qualities_json")
-        qualities_json=$(verify_streams "$qualities_json")
         spinner_stop
         [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for last watched entry"
 
