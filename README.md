@@ -137,6 +137,7 @@ movie-cli -s "inception"
 
 | Flag | Description |
 |------|-------------|
+| `-p, --plugin NAME` | Use specific plugin (default: auto) |
 | `-q, --quality LEVEL` | Min quality: 480, 720, 1080 (default: 720) |
 | `-c, --continue` | Continue watching last entry |
 | `-l, --log` | View watch history |
@@ -145,10 +146,14 @@ movie-cli -s "inception"
 | `-S, --select N` | Auto-select Nth result |
 | `--no-detach` | Keep terminal attached to player; script waits for player to exit before returning |
 | `--check-deps` | Verify all dependencies |
+| `--list-plugins` | List available plugins |
 | `--no-cache` | Bypass cache |
 | `--clear-cache` | Clear all cached data |
 | `--debug` | Enable debug logging (logs written to `~/.local/share/movie-cli/movie-cli.log`) |
 | `--quiet` | Suppress non-essential output (progress spinners, info messages) |
+| `--no-color` | Disable colored output (also automatic when not connected to a terminal) |
+| `--profile` | Show timing profile after execution (plugin discovery, search, stream resolution, player launch) |
+| `-u, --update` | Self-update from GitHub (not yet implemented) |
 | `-v, --version` | Show version |
 | `-h, --help` | Show help |
 

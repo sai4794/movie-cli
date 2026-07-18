@@ -37,14 +37,10 @@ ui_success() {
     printf "${C_GREEN}%s${C_RESET}\n" "$1" >&2
 }
 
-
-
 # Print error message
 ui_error() {
     printf "${C_RED}%s${C_RESET}\n" "$1" >&2
 }
-
-
 
 # Print info line (verbose only)
 ui_info() {
@@ -306,6 +302,7 @@ show_help() {
     printf "      --no-cache         Bypass cache\n" >&2
     printf "      --clear-cache      Clear all cached data\n" >&2
     printf "      --profile          Show timing profile\n" >&2
+    printf "      --no-color         Disable colored output\n" >&2
     printf "  -v, --version          Show version\n" >&2
     printf "  -h, --help             Show this help\n\n" >&2
     printf "${C_BOLD}Examples:${C_RESET}\n" >&2

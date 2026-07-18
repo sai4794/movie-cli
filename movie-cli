@@ -122,7 +122,7 @@ verify_streams() {
         local url
         url=$(printf '%s' "$json" | jq -r ".[$i].url // empty" 2>/dev/null)
         if [[ -n "$url" ]]; then
-            local http_code curl_exit=0
+            local http_code
             # ponytail: only set Referer for Vidlink/CDN URLs, omit for others
             local referer_arg=()
             if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
