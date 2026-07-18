@@ -154,7 +154,7 @@ Priority: CLI flags > env vars > config file > built-in defaults.
 
 [MIT](LICENSE)
 
-## Credits
+## Inspiration
 
 - [ani-cli](https://github.com/pystardust/ani-cli) — inspiration
 
