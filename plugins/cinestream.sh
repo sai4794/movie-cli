@@ -227,6 +227,7 @@ plugin_get_url() {
     addon_list+=("https://addon.notorrent2.workers.dev")
     addon_list+=("https://pengu.uk")
     addon_list+=("https://webstreamrmbg.onrender.com")
+    addon_list+=("https://hdhub.thevolecitor.qzz.io")
 
 
     # Load custom Stremio Addon configurations from settings
