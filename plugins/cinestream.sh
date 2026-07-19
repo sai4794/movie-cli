@@ -19,7 +19,7 @@ PLUGIN_DESCRIPTION="Movies and series resolved via Cinemeta, Vidlink, and PlayIm
 _CINEMETA_BASE="https://v3-cinemeta.strem.io"
 _VIDLINK_BASE="https://vidlink.pro"
 _ENC_DEC_BASE="https://enc-dec.app"
-_CURL_TIMEOUT="-L --connect-timeout 10 --max-time 30"
+_CURL_TIMEOUT="-L --connect-timeout 5 --max-time 15"
 _CONF_CINESTREAM="$CONF_DIR/cinestream.conf"
 STREMIO_ADDONS=""
 
@@ -206,13 +206,6 @@ plugin_get_url() {
 
     local imdb_id="${id%%:*}"
 
-    # 1. Fetch TMDB ID from Cinemeta details API
-    local meta_res tmdb_id=""
-    meta_res=$(curl -s $_CURL_TIMEOUT "${_CINEMETA_BASE}/meta/${type}/${imdb_id}.json")
-    if printf '%s' "$meta_res" | jq -e . >/dev/null 2>&1; then
-        tmdb_id=$(printf '%s' "$meta_res" | jq -r '.meta.moviedb_id // empty')
-    fi
-
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
@@ -291,8 +284,8 @@ plugin_get_url() {
 
                 # Only retry transient failures — if we got a response, no point retrying
                 if [[ "$addon_fetched" -eq 0 ]] && (( attempt < 2 )); then
-                    debug "Addon $addon_label attempt $attempt failed, retrying in 1s..."
-                    sleep 1
+                    debug "Addon $addon_label attempt $attempt failed, retrying in 0.5s..."
+                    sleep 0.5
                 fi
                 (( attempt++ ))
             done
@@ -363,62 +356,79 @@ plugin_get_url() {
         addon_idx=$((addon_idx + 1))
     done
 
-    # 3. Vidlink provider (run in background)
-    if [[ -n "$tmdb_id" && "$tmdb_id" != "null" ]]; then
-        (
-            local enc_res enc_token=""
-            enc_res=$(curl -s $_CURL_TIMEOUT "${_ENC_DEC_BASE}/api/enc-vidlink?text=${tmdb_id}")
-            if printf '%s' "$enc_res" | jq -e . >/dev/null 2>&1; then
-                enc_token=$(printf '%s' "$enc_res" | jq -r '.result // empty')
+    # 3. Vidlink provider (run in background — resolves TMDB ID internally)
+    (
+        # Resolve TMDB ID from Cinemeta (cached 24h — IMDB↔TMDB mapping is stable)
+        local tmdb_id=""
+        local _tmdb_cache_key="tmdb_id|${imdb_id}"
+        if declare -f cache_get >/dev/null 2>&1; then
+            tmdb_id=$(cache_get "$_tmdb_cache_key" 86400 2>/dev/null) || tmdb_id=""
+        fi
+
+        if [[ -z "$tmdb_id" ]]; then
+            local meta_res
+            meta_res=$(curl -s $_CURL_TIMEOUT "${_CINEMETA_BASE}/meta/${type}/${imdb_id}.json" 2>/dev/null)
+            if printf '%s' "$meta_res" | jq -e . >/dev/null 2>&1; then
+                tmdb_id=$(printf '%s' "$meta_res" | jq -r '.meta.moviedb_id // empty')
+            fi
+            if [[ -n "$tmdb_id" && "$tmdb_id" != "null" ]] && declare -f cache_set >/dev/null 2>&1; then
+                cache_set "$_tmdb_cache_key" "$tmdb_id"
+            fi
+        fi
+
+        [[ -z "$tmdb_id" || "$tmdb_id" == "null" ]] && exit 0
+
+        local enc_res enc_token=""
+        enc_res=$(curl -s $_CURL_TIMEOUT "${_ENC_DEC_BASE}/api/enc-vidlink?text=${tmdb_id}")
+        if printf '%s' "$enc_res" | jq -e . >/dev/null 2>&1; then
+            enc_token=$(printf '%s' "$enc_res" | jq -r '.result // empty')
+        fi
+
+        if [[ -n "$enc_token" && "$enc_token" != "null" ]]; then
+            local api_url
+            if [[ "$id" == *:* ]]; then
+                local parts
+                IFS=':' read -r -a parts <<< "$id"
+                api_url="${_VIDLINK_BASE}/api/b/tv/${enc_token}/${parts[1]}/${parts[2]}"
+            else
+                api_url="${_VIDLINK_BASE}/api/b/movie/${enc_token}"
             fi
 
-            if [[ -n "$enc_token" && "$enc_token" != "null" ]]; then
-                local api_url
-                if [[ "$id" == *:* ]]; then
-                    local parts
-                    IFS=':' read -r -a parts <<< "$id"
-                    api_url="${_VIDLINK_BASE}/api/b/tv/${enc_token}/${parts[1]}/${parts[2]}"
-                else
-                    api_url="${_VIDLINK_BASE}/api/b/movie/${enc_token}"
-                fi
+            local response
+            response=$(curl -s $_CURL_TIMEOUT \
+                -H "Referer: ${_VIDLINK_BASE}/" \
+                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36" \
+                "$api_url")
 
-                local response
-                response=$(curl -s $_CURL_TIMEOUT \
-                    -H "Referer: ${_VIDLINK_BASE}/" \
-                    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36" \
-                    "$api_url")
-                
-                if printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
-                    printf '%s' "$response" | jq -r '
-                        .stream // empty |
-                        if .qualities != null and (.qualities | length) > 0 then
-                            .qualities |
-                            to_entries |
-                            map({
-                                quality: .key,
-                                url: .value.url,
-                                size: (.value.size // "0" | tonumber / 1048576 | floor | tostring + " MB"),
-                                provider: "VidLink"
-                            }) |
-                            sort_by(.quality | tonumber) |
-                            reverse
-                        elif .playlist != null and .playlist != "" then
-                            [{
-                                quality: "auto",
-                                url: .playlist,
-                                size: "unknown",
-                                provider: "VidLink"
-                            }]
-                        else
-                            []
-                        end
-                    ' 2>/dev/null > "$tmp_dir/vidlink.json"
-                fi
+            if printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
+                printf '%s' "$response" | jq -r '
+                    .stream // empty |
+                    if .qualities != null and (.qualities | length) > 0 then
+                        .qualities |
+                        to_entries |
+                        map({
+                            quality: .key,
+                            url: .value.url,
+                            size: (.value.size // "0" | tonumber / 1048576 | floor | tostring + " MB"),
+                            provider: "VidLink"
+                        }) |
+                        sort_by(.quality | tonumber) |
+                        reverse
+                    elif .playlist != null and .playlist != "" then
+                        [{
+                            quality: "auto",
+                            url: .playlist,
+                            size: "unknown",
+                            provider: "VidLink"
+                        }]
+                    else
+                        []
+                    end
+                ' 2>/dev/null > "$tmp_dir/vidlink.json"
             fi
-        ) &
-        pids+=($!)
-
-    fi
+        fi
+    ) &
+    pids+=($!)
 
     # 5. PlayImdb fallback/provider (run in background)
     (
@@ -433,29 +443,22 @@ plugin_get_url() {
     # Wait for all background jobs to finish
     wait "${pids[@]}" 2>/dev/null || true
 
-    # Merge all JSON outputs and sort by language relevance
-    # ponytail: known languages first, unknown last
+    # Merge all JSON outputs and sort by language relevance (single-pass)
+    # ponytail: known languages first, unknown last — single jq invocation
     local merged_json="[]"
-    for f in "$tmp_dir"/*.json; do
-        [[ -f "$f" ]] || continue
-        local content
-        content=$(cat "$f")
-        if [[ -n "$content" && "$content" != "[]" ]]; then
-            merged_json=$(printf '%s\n%s' "$merged_json" "$content" | jq -s 'add' 2>/dev/null || echo "$merged_json")
-        fi
-    done
+    if compgen -G "$tmp_dir/*.json" > /dev/null 2>&1; then
+        merged_json=$(cat "$tmp_dir"/*.json 2>/dev/null | jq -s '
+            add // [] |
+            sort_by(
+                if .lang == "unknown" then 1
+                elif .lang == "english" then 2
+                elif .lang == "original" then 3
+                else 0
+                end
+            )
+        ' 2>/dev/null) || merged_json="[]"
+    fi
     rm -rf "$tmp_dir"
-
-    # Sort: known languages first (telugu > hindi > tamil > kannada > malayalam > original > english), unknown last
-    merged_json=$(printf '%s' "$merged_json" | jq '
-        sort_by(
-            if .lang == "unknown" then 1
-            elif .lang == "english" then 2
-            elif .lang == "original" then 3
-            else 0
-            end
-        )
-    ' 2>/dev/null || echo "$merged_json")
 
     if [[ -z "$merged_json" || "$merged_json" == "[]" ]]; then
         die_plugin "No playable links resolved for ID: $id"

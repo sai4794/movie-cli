@@ -106,6 +106,7 @@ sort_streams() {
 # Verify streams — real playback check (follow redirects + referer)
 # Args: $1=JSON array of stream objects
 # Returns filtered JSON with only streams mpv can actually play
+# ponytail: parallel verification — all streams checked concurrently
 verify_streams() {
     local json="$1"
     [[ -z "$json" || "$json" == "[]" ]] && { printf '[]'; return; }
@@ -114,38 +115,47 @@ verify_streams() {
     total=$(printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0)
     (( total <= 1 )) && { printf '%s' "$json"; return; }
 
-    # ponytail: sequential, parallel if >20 streams
-    # ponytail: -L follows redirects like mpv does, Referer bypasses CDN 403
-    local indices=""
-    local i=0
-    while (( i < total )); do
-        local url
-        url=$(printf '%s' "$json" | jq -r ".[$i].url // empty" 2>/dev/null)
-        if [[ -n "$url" ]]; then
-            local http_code
-            # ponytail: only set Referer for Vidlink/CDN URLs, omit for others
+    # Extract all URLs in a single jq call (avoids N subprocess spawns)
+    local tmp_verify
+    tmp_verify=$(mktemp -d)
+    printf '%s' "$json" | jq -r 'to_entries[] | "\(.key)\t\(.value.url // "")"' \
+        2>/dev/null > "$tmp_verify/urls.tsv"
+
+    # ponytail: verify all streams in parallel — -L follows redirects like mpv
+    # Referer bypasses CDN 403 on Vidlink URLs
+    local pids=()
+    while IFS=$'\t' read -r idx url; do
+        [[ -z "$url" ]] && continue
+        (
             local referer_arg=()
             if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
                 referer_arg=(-H "Referer: https://vidlink.pro/")
             fi
+            local http_code
             http_code=$(curl -so /dev/null -w "%{http_code}" \
                 -L --connect-timeout 4 --max-time 8 \
                 -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
-                "$url" 2>/dev/null)
+                "$url" 2>/dev/null) || http_code="000"
             if [[ "$http_code" =~ ^(200|206)$ ]]; then
-                indices+="$i "
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
             fi
-        fi
-        (( ++i ))
-    done
+        ) &
+        pids+=($!)
+    done < "$tmp_verify/urls.tsv"
 
-    local result="[]"
-    for idx in $indices; do
-        local item
-        item=$(printf '%s' "$json" | jq ".[$idx]" 2>/dev/null)
-        result=$(printf '%s' "$result" | jq --argjson item "$item" '. + [$item]' 2>/dev/null)
-    done
+    wait "${pids[@]}" 2>/dev/null || true
+
+    # Collect valid indices and build result in a single jq call
+    local valid_indices="[]"
+    if compgen -G "$tmp_verify/pass_*" > /dev/null 2>&1; then
+        valid_indices=$(cat "$tmp_verify"/pass_* 2>/dev/null | jq -s '.' 2>/dev/null) || valid_indices="[]"
+    fi
+    rm -rf "$tmp_verify"
+
+    local result
+    result=$(printf '%s' "$json" | jq --argjson idx "$valid_indices" \
+        '[to_entries[] | select(.key as $k | $idx | any(. == $k)) | .value]' 2>/dev/null) || result="[]"
 
     local kept
     kept=$(printf '%s' "$result" | jq 'length' 2>/dev/null || echo 0)
