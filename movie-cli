@@ -113,7 +113,6 @@ verify_streams() {
 
     local total
     total=$(printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0)
-    (( total <= 1 )) && { printf '%s' "$json"; return; }
 
     # Extract all URLs in a single jq call (avoids N subprocess spawns)
     local tmp_verify
