@@ -146,6 +146,9 @@ verify_streams() {
             [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
             # Reject empty hex (nothing returned)
             [[ -z "$hex" ]] && exit 0
+            # Reject JSON responses (error pages, API errors)
+            [[ "$hex" =~ ^7b ]] && exit 0
+            [[ "$hex" =~ ^5b ]] && exit 0
             # Reject HTML — DOCTYPE is 3c21444f4354595045 (<!DOCTYPE)
             [[ "$hex" =~ ^3c21444f4354595045 ]] && exit 0
             # Reject HTML — <html is 3c68746d6c
