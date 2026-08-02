@@ -19,7 +19,7 @@ PLUGIN_DESCRIPTION="Movies and series resolved via Cinemeta, Vidlink, and PlayIm
 _CINEMETA_BASE="https://v3-cinemeta.strem.io"
 _VIDLINK_BASE="https://vidlink.pro"
 _ENC_DEC_BASE="https://enc-dec.app"
-_CURL_TIMEOUT="-L --connect-timeout 5 --max-time 15"
+_CURL_TIMEOUT="-L --connect-timeout 4 --max-time 8"
 _CONF_CINESTREAM="$CONF_DIR/cinestream.conf"
 STREMIO_ADDONS=""
 
