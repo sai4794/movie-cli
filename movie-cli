@@ -130,22 +130,26 @@ verify_streams() {
             if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
                 referer_arg=(-H "Referer: https://vidlink.pro/")
             fi
-            local http_code hex
-            # Get hex of first 16 bytes — avoids binary in bash variables (no null byte warning)
-            hex=$(curl -s \
+            local http_code hex tmp_body
+            tmp_body=$(mktemp)
+            # Single curl: save body + capture HTTP status (no race condition)
+            http_code=$(curl -s \
                 -L --connect-timeout 4 --max-time 8 \
                 -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
-                "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
-            http_code=$(curl -so /dev/null -w "%{http_code}" \
-                -L --connect-timeout 4 --max-time 8 \
-                -H "Range: bytes=0-1023" \
-                "${referer_arg[@]}" \
+                -o "$tmp_body" -w "%{http_code}" \
                 "$url" 2>/dev/null) || http_code="000"
+            # Get hex of first 16 bytes from saved body
+            hex=$(head -c 16 "$tmp_body" 2>/dev/null | xxd -p 2>/dev/null)
+            rm -f "$tmp_body"
             # Reject non-2xx responses
             [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
             # Reject empty hex (nothing returned)
             [[ -z "$hex" ]] && exit 0
+            # Reject rate-limit / error text (Too many requests, etc.)
+            [[ "$hex" =~ ^546f6f20 ]] && exit 0
+            # Reject plain text error responses (not video)
+            [[ "$hex" =~ ^48545450 ]] && exit 0
             # Reject JSON responses (error pages, API errors)
             [[ "$hex" =~ ^7b ]] && exit 0
             [[ "$hex" =~ ^5b ]] && exit 0

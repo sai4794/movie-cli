@@ -216,10 +216,11 @@ plugin_get_url() {
     local -a addon_list=()
     # Built-in default addons (free, zero-config)
     # ponytail: superflix removed (404 since 2025). Add back when reachable.
+    # ponytail: webstreamrmbg removed — returns HTML link generators, JSON errors,
+    # and 429 rate limits. Inconsistent responses break mpv playback.
     addon_list+=("https://desiflix.stremioaddon.workers.dev")
     addon_list+=("https://addon.notorrent2.workers.dev")
     addon_list+=("https://pengu.uk")
-    addon_list+=("https://webstreamrmbg.onrender.com")
     addon_list+=("https://hdhub.thevolecitor.qzz.io")
 
 
