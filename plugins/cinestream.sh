@@ -218,7 +218,6 @@ plugin_get_url() {
     # ponytail: superflix removed (404 since 2025). Add back when reachable.
     addon_list+=("https://desiflix.stremioaddon.workers.dev")
     addon_list+=("https://addon.notorrent2.workers.dev")
-    addon_list+=("https://pengu.uk")
     addon_list+=("https://webstreamrmbg.onrender.com")
     addon_list+=("https://hdhub.thevolecitor.qzz.io")
 
