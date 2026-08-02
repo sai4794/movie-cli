@@ -131,13 +131,41 @@ verify_streams() {
             if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
                 referer_arg=(-H "Referer: https://vidlink.pro/")
             fi
-            local http_code
+            local first_bytes http_code
+            # Fetch first 16 bytes + HTTP status in one request
+            first_bytes=$(curl -s \
+                -L --connect-timeout 4 --max-time 8 \
+                -H "Range: bytes=0-1023" \
+                "${referer_arg[@]}" \
+                "$url" 2>/dev/null | head -c 16)
             http_code=$(curl -so /dev/null -w "%{http_code}" \
                 -L --connect-timeout 4 --max-time 8 \
                 -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
                 "$url" 2>/dev/null) || http_code="000"
-            if [[ "$http_code" =~ ^(200|206)$ ]]; then
+            # Reject non-2xx responses
+            [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
+            # Reject HTML pages (link generators like HubCloud)
+            printf '%s' "$first_bytes" | grep -qE '^<!DOCTYPE|^<html|^<\?|^<!\[CDATA' && exit 0
+            # Accept known video signatures
+            local hex
+            hex=$(printf '%s' "$first_bytes" | xxd -p 2>/dev/null | head -c 32)
+            if printf '%s' "$first_bytes" | grep -qE '^#EXTM3U|^#EXTINF'; then
+                # m3u8 playlist
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+            elif printf '%s' "$hex" | grep -qE '^000000..66747970|^66747970'; then
+                # MP4 (ftyp box)
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+            elif printf '%s' "$hex" | grep -qE '^1a45dfa3'; then
+                # Matroska/WebM
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+            elif printf '%s' "$first_bytes" | head -c 1 | grep -qP '^\x47'; then
+                # MPEG-TS (0x47 sync byte)
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+            elif printf '%s' "$first_bytes" | grep -qE '^\.FVL'; then
+                # FLV
+                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+            elif printf '%s' "$hex" | grep -qE '^1a45dfa3|0000001c66747970|66747970|234558544d3355'; then
                 printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
             fi
         ) &
