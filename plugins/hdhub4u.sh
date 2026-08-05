@@ -27,6 +27,7 @@ _H4U_BASE="https://new4.hdhub4u.cl"
 _H4U_SEARCH="https://search.pingora.fyi/collections/post/documents/search"
 _H4U_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _H4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/")
+_H4U_ALLOW_HOSTS=""
 
 _load_h4u_config() {
     local conf_file="$CONF_DIR/hdhub4u.conf"
@@ -48,6 +49,7 @@ _load_h4u_config() {
         case "$key" in
             BASE_URL) _H4U_BASE="$value" ;;
             SEARCH_URL) _H4U_SEARCH="$value" ;;
+            ALLOW_HOSTS) _H4U_ALLOW_HOSTS="$value" ;;
         esac
     done < "$conf_file"
 }
@@ -92,6 +94,54 @@ _h4u_resolve_drive() {
     _h4u_resolve_resolver "$href"
 }
 
+# Fuzzy host matching for resolver links (CloudStream-style: match broadly,
+# let verify_streams filter garbage). Accepts a link as a stream candidate if:
+#   1. host contains a known file-host family (substring match handles rotated
+#      subdomains: workers.dev, r2.cloudflarestorage, fsl*, pixeldrain,
+#      hubcloud, hubdrive, filescdn, aiplex, googleusercontent), OR
+#   2. URL looks like a direct media file (.mkv/.mp4/.m3u8/.webm/.ts/.flv), OR
+#   3. host matches a user-configured ALLOW_HOSTS token (comma-separated
+#      substrings in $CONF_DIR/hdhub4u.conf — add new hosts without editing
+#      the plugin).
+# Hard rejects: telegram, ad, navigation, and shortener links.
+_h4u_is_stream_candidate() {
+    local link="$1"
+    local lower
+    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
+
+    # Hard rejects — these are never streams
+    case "$lower" in
+        *tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*)
+            return 1 ;;
+    esac
+
+    # User-configured host allowlist wins over everything
+    if [[ -n "$_H4U_ALLOW_HOSTS" ]]; then
+        local host allow
+        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
+        local -a allow_arr=()
+        IFS=',' read -r -a allow_arr <<< "$_H4U_ALLOW_HOSTS"
+        for allow in "${allow_arr[@]}"; do
+            allow="${allow,,}"
+            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
+        done
+    fi
+
+    # Known file-host families (substring match = fuzzy across rotated hosts)
+    case "$lower" in
+        *workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*)
+            return 0 ;;
+    esac
+
+    # Direct media URL heuristic — video extension anywhere in the URL
+    case "$lower" in
+        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
+            return 0 ;;
+    esac
+
+    return 1
+}
+
 _h4u_resolve_resolver() {
     local resolver_url="$1"
     local page
@@ -102,7 +152,7 @@ _h4u_resolve_resolver() {
     printf '%s' "$page" | grep -oE '<a[^>]*href="https?://[^"]+"[^>]*class="[^"]*btn[^"]*"' | \
         sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
         case "$link" in
-            *pixel.hubcloud.cx*)
+            *pixel.hubcloud.cx*|*gpdl.hubcloud.cx*)
                 _h4u_resolve_pixel "$link"
                 ;;
             *pixeldrain*)
@@ -116,10 +166,12 @@ _h4u_resolve_resolver() {
                     printf '%s\n' "${pd_base}/api/file/${pd_id}?download"
                 fi
                 ;;
-            *workers.dev*|*fsl-buckets*|*filescdn*|*aiplexmedia*|*.mkv*|*.mp4*)
-                printf '%s\n' "$link"
-                ;;
-            *tg/go*|*snvhost*|*one.one.one.one*|*google.com*|*hubcloud.cx/drive*|*tinyurl*|*t.me*|*HDhub4u.ms*)
+            *)
+                # Fuzzy match — no exact host allowlist; unknown-but-plausible
+                # mirrors are accepted here and filtered by verify_streams later
+                if _h4u_is_stream_candidate "$link"; then
+                    printf '%s\n' "$link"
+                fi
                 ;;
         esac
     done
@@ -127,10 +179,19 @@ _h4u_resolve_resolver() {
 
 _h4u_resolve_pixel() {
     local pixel_url="$1"
-    local page dl_url final
+    local page dl_url final url_eff
 
-    page=$(curl "${_H4U_CURL[@]}" "$pixel_url" 2>/dev/null) || return 1
+    # Follow the redirect chain: pixel/gpdl → pixel.*.workers.dev → dl.php?link=...
+    # The final URL itself carries the link param (gpdl chain lands on dl.php);
+    # the page body references it too (pixel chain). Check both.
+    page=$(curl "${_H4U_CURL[@]}" -o /tmp/h4u_pixel_body.$$ -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
+    url_eff="$page"
+    page=$(cat /tmp/h4u_pixel_body.$$ 2>/dev/null || true)
+    rm -f /tmp/h4u_pixel_body.$$
     dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' ]*dl\.php\?link=[^"'"'"' ]+' | head -1 2>/dev/null || true)
+    if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
+        dl_url="$url_eff"
+    fi
     [[ -z "$dl_url" ]] && return 1
     final=$(printf '%s' "$dl_url" | sed -E 's/.*link=//' | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))' 2>/dev/null || true)
     [[ -z "$final" ]] && return 1
