@@ -24,6 +24,12 @@ _4KH_BASE="https://4khdhub.one"
 _4KH_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _4KH_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_4KH_UA")
 _4KH_ALLOW_HOSTS=""
+# Live domain list — same source the CloudStream FourKHDHub extension uses
+# (phisher98/TVVVV/domains.json). Auto-rotation: sites move domains to dodge
+# blocking; when the redirect dies, a hardcoded BASE_URL kills the plugin.
+_4KH_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
+_4KH_DOMAINS_CACHE_KEY="4khdhub_domains"
+_4KH_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
 _load_4kh_config() {
     local conf_file="$CONF_DIR/4khdhub.conf"
@@ -43,10 +49,41 @@ _load_4kh_config() {
         value="${value%\'}"
         [[ -z "$key" ]] && continue
         case "$key" in
-            BASE_URL) _4KH_BASE="$value" ;;
+            BASE_URL) _4KH_BASE="$value"; _4KH_BASE_USER_SET=1 ;;
             ALLOW_HOSTS) _4KH_ALLOW_HOSTS="$value" ;;
         esac
     done < "$conf_file"
+}
+
+# Auto domain rotation (CloudStream-style): fetch the live domain list once a
+# day, use the returned domain unless the user pinned BASE_URL in conf.
+_4kh_load_domains() {
+    [[ "$_4KH_BASE_USER_SET" == "1" ]] && return 0
+
+    local cached=""
+    if declare -f cache_get >/dev/null 2>&1; then
+        cached=$(cache_get "$_4KH_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
+    fi
+    if [[ -z "$cached" ]]; then
+        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_4KH_UA" "$_4KH_DOMAINS_URL" 2>/dev/null || true)
+        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
+            if declare -f cache_set >/dev/null 2>&1; then
+                cache_set "$_4KH_DOMAINS_CACHE_KEY" "$cached" || true
+            fi
+        else
+            cached=""
+        fi
+    fi
+    [[ -z "$cached" ]] && return 0
+
+    local dom
+    dom=$(printf '%s' "$cached" | jq -r '.["4khdhub"] // empty' 2>/dev/null || true)
+    [[ -z "$dom" || "$dom" == "null" ]] && return 0
+    dom="${dom%/}"
+    if [[ "$dom" != "$_4KH_BASE" ]]; then
+        debug "4KHDHub domain rotated: $_4KH_BASE → $dom"
+        _4KH_BASE="$dom"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -238,6 +275,7 @@ plugin_search() {
     local query="$1"
     local quality="${2:-720}"
     _load_4kh_config
+    _4kh_load_domains
 
     local encoded_query
     encoded_query=$(urlencode "$query")
@@ -267,6 +305,7 @@ plugin_get_url() {
     local id="$1"
     local quality="${2:-720}"
     _load_4kh_config
+    _4kh_load_domains
 
     local series_id="" season="" episode=""
     # Episode ID convention: series_id:season:episode
@@ -345,6 +384,7 @@ for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", h
 plugin_list_seasons() {
     local series_id="$1"
     _load_4kh_config
+    _4kh_load_domains
 
     local html
     html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/${series_id}/" 2>/dev/null) || return 1
@@ -367,6 +407,7 @@ plugin_list_episodes() {
     local series_id="$1"
     local season="$2"
     _load_4kh_config
+    _4kh_load_domains
 
     local html
     html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/${series_id}/" 2>/dev/null) || return 1
@@ -398,6 +439,7 @@ print(json.dumps(out))
 
 plugin_health() {
     _load_4kh_config
+    _4kh_load_domains
     curl -s --connect-timeout 8 --max-time 15 -o /dev/null -w '%{http_code}' \
         -A "$_4KH_UA" "${_4KH_BASE}/?s=test" 2>/dev/null | grep -qE '^200$'
 }

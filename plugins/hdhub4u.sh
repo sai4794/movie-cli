@@ -28,6 +28,17 @@ _H4U_SEARCH="https://search.pingora.fyi/collections/post/documents/search"
 _H4U_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _H4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/")
 _H4U_ALLOW_HOSTS=""
+# Live domain list — same source the CloudStream HDhub4u extension uses
+# (phisher98/TVVVV/domains.json). Auto-rotation: sites move domains to dodge
+# blocking; when the redirect dies, a hardcoded BASE_URL kills the plugin.
+_H4U_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
+_H4U_DOMAINS_CACHE_KEY="hdhub4u_domains"
+_H4U_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
+
+# Rebuild the curl array — Referer depends on the current base
+_h4u_rebuild_curl() {
+    _H4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/")
+}
 
 _load_h4u_config() {
     local conf_file="$CONF_DIR/hdhub4u.conf"
@@ -47,11 +58,44 @@ _load_h4u_config() {
         value="${value%\'}"
         [[ -z "$key" ]] && continue
         case "$key" in
-            BASE_URL) _H4U_BASE="$value" ;;
+            BASE_URL) _H4U_BASE="$value"; _H4U_BASE_USER_SET=1 ;;
             SEARCH_URL) _H4U_SEARCH="$value" ;;
             ALLOW_HOSTS) _H4U_ALLOW_HOSTS="$value" ;;
         esac
     done < "$conf_file"
+    _h4u_rebuild_curl
+}
+
+# Auto domain rotation (CloudStream-style): fetch the live domain list once a
+# day, use the returned domain unless the user pinned BASE_URL in conf.
+_h4u_load_domains() {
+    [[ "$_H4U_BASE_USER_SET" == "1" ]] && return 0
+
+    local cached=""
+    if declare -f cache_get >/dev/null 2>&1; then
+        cached=$(cache_get "$_H4U_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
+    fi
+    if [[ -z "$cached" ]]; then
+        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_H4U_UA" "$_H4U_DOMAINS_URL" 2>/dev/null || true)
+        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
+            if declare -f cache_set >/dev/null 2>&1; then
+                cache_set "$_H4U_DOMAINS_CACHE_KEY" "$cached" || true
+            fi
+        else
+            cached=""
+        fi
+    fi
+    [[ -z "$cached" ]] && return 0
+
+    local dom
+    dom=$(printf '%s' "$cached" | jq -r '.["HDHUB4u"] // empty' 2>/dev/null || true)
+    [[ -z "$dom" || "$dom" == "null" ]] && return 0
+    dom="${dom%/}"
+    if [[ "$dom" != "$_H4U_BASE" ]]; then
+        debug "HDhub4u domain rotated: $_H4U_BASE → $dom"
+        _H4U_BASE="$dom"
+        _h4u_rebuild_curl
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -242,6 +286,7 @@ plugin_search() {
     local query="$1"
     local quality="${2:-720}"
     _load_h4u_config
+    _h4u_load_domains
 
     # Typesense search API — GET with query params (POST → 403)
     local response
@@ -276,6 +321,7 @@ plugin_get_url() {
     local id="$1"
     local quality="${2:-720}"
     _load_h4u_config
+    _h4u_load_domains
 
     local series_id="" season="" episode=""
     if [[ "$id" == *:*:* ]]; then
@@ -351,6 +397,7 @@ for m in pat.finditer(html):
 plugin_list_seasons() {
     local series_id="$1"
     _load_h4u_config
+    _h4u_load_domains
 
     local html
     html=$(curl "${_H4U_CURL[@]}" "${_H4U_BASE}/${series_id}/" 2>/dev/null) || return 1
@@ -369,6 +416,7 @@ plugin_list_episodes() {
     local series_id="$1"
     local season="$2"
     _load_h4u_config
+    _h4u_load_domains
 
     local html
     html=$(curl "${_H4U_CURL[@]}" "${_H4U_BASE}/${series_id}/" 2>/dev/null) || return 1
@@ -396,6 +444,7 @@ print(json.dumps(result))
 
 plugin_health() {
     _load_h4u_config
+    _h4u_load_domains
     curl -s --connect-timeout 8 --max-time 15 -o /dev/null -w '%{http_code}' \
         -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/" \
         -G "$_H4U_SEARCH" --data-urlencode "q=test" \
