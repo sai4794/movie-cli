@@ -75,3 +75,20 @@ teardown() {
     run plugin_health
     assert_success
 }
+
+@test "HDhub4u series seasons are extracted" {
+    run plugin_list_seasons "all-of-us-are-dead-s01-hindi-webrip-all-episodes"
+    assert_success
+    printf '%s' "$output" | jq -e '.[0].id and .[0].title and .[0].number' >/dev/null
+}
+
+@test "HDhub4u series episodes are extracted per season" {
+    run plugin_list_episodes "all-of-us-are-dead-s01-hindi-webrip-all-episodes" "1"
+    assert_success
+
+    local count
+    count=$(printf '%s' "$output" | jq '. | length')
+    [[ "$count" -gt 0 ]]
+    # Episode id convention: series_id:season:episode
+    printf '%s' "$output" | jq -e '.[0].id | test("^all-of-us-are-dead-s01-hindi-webrip-all-episodes:1:[0-9]+$")' >/dev/null
+}

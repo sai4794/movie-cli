@@ -221,7 +221,12 @@ plugin_get_url() {
         IFS=':' read -r series_id season episode <<< "$id"
     fi
 
-    local detail_url="${_H4U_BASE}/${id}/"
+    local detail_url
+    if [[ -n "$series_id" ]]; then
+        detail_url="${_H4U_BASE}/${series_id}/"
+    else
+        detail_url="${_H4U_BASE}/${id}/"
+    fi
     local html
     html=$(curl "${_H4U_CURL[@]}" "$detail_url" 2>/dev/null) || die_network "HDhub4u detail page fetch failed"
     [[ -z "$html" ]] && die_plugin "Empty HDhub4u detail page"
@@ -230,17 +235,17 @@ plugin_get_url() {
     # (hdstream4u → morencius "Downloads disabled", hubcdn.sbs → ad shortener)
     local mirror_links
     if [[ -n "$series_id" ]]; then
+        # Series episode id "series:season:episode" — the post page lists
+        # single-episode links as "E01 – <a href=hubdrive...>". Select only
+        # the anchor for the requested episode number.
         mirror_links=$(printf '%s' "$html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
-season, episode = sys.argv[1], sys.argv[2]
-pat = re.compile(r"S%02dE%02d" % (int(season), int(episode)))
-for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", html, re.S):
-    block = m.group(1)
-    if pat.search(block):
-        for u in re.findall(r"href=\"(https://(?:hubdrive|hubcloud)[^\"]+)\"", block):
-            print(u)
-' "$season" "$episode" 2>/dev/null || true)
+episode = int(sys.argv[1])
+pat = re.compile(r"E%02d\s*(?:&#8211;|&ndash;|&mdash;|-)?\s*<a href=\"(https://(?:hubdrive|hubcloud)[^\"]+)\"" % episode)
+for m in pat.finditer(html):
+    print(m.group(1))
+' "$episode" 2>/dev/null || true)
     else
         mirror_links=$(printf '%s' "$html" | grep -oE 'href="https://(hubdrive|hubcloud)[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
     fi
@@ -280,6 +285,52 @@ for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", h
 
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
+}
+
+plugin_list_seasons() {
+    local series_id="$1"
+    _load_h4u_config
+
+    local html
+    html=$(curl "${_H4U_CURL[@]}" "${_H4U_BASE}/${series_id}/" 2>/dev/null) || return 1
+    [[ -z "$html" ]] && return 1
+
+    # Season-pack post (e.g. "All of Us Are Dead (Season 1) ... ALL Episodes").
+    # Extract the season number from the title; fall back to 1.
+    local season
+    season=$(printf '%s' "$html" | grep -oiE 'Season [0-9]+' | head -1 | grep -oE '[0-9]+' 2>/dev/null || true)
+    [[ -z "$season" ]] && season="1"
+
+    printf '[{"id":"%s","title":"Season %s","number":%s}]\n' "$season" "$season" "$season"
+}
+
+plugin_list_episodes() {
+    local series_id="$1"
+    local season="$2"
+    _load_h4u_config
+
+    local html
+    html=$(curl "${_H4U_CURL[@]}" "${_H4U_BASE}/${series_id}/" 2>/dev/null) || return 1
+    [[ -z "$html" ]] && return 1
+
+    # Single-episode links: "E01 – <a href=hubdrive...>". One link per episode.
+    printf '%s' "$html" | python3 -c '
+import sys, re, json
+html = sys.stdin.read()
+series_id, season = sys.argv[1], sys.argv[2]
+out = []
+for m in re.finditer(r"E(\d{1,2})\s*(?:&#8211;|&ndash;|&mdash;|-)?\s*<a href=\"https://(?:hubdrive|hubcloud)[^\"]+\"", html):
+    ep = int(m.group(1))
+    out.append({"id": "%s:%s:%d" % (series_id, season, ep),
+                "title": "Episode %d" % ep,
+                "season": int(season), "episode": ep})
+# Dedupe by episode number, sort ascending
+seen = {}
+for e in out:
+    seen[e["episode"]] = e
+result = [seen[k] for k in sorted(seen)]
+print(json.dumps(result))
+' "$series_id" "$season" 2>/dev/null || printf '[]'
 }
 
 plugin_health() {
