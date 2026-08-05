@@ -201,7 +201,7 @@ plugin_search() {
     printf '%s' "$response" | jq -c '
         [.hits[]?.document |
         {
-            id: (.permalink | gsub("^/"; "") | gsub("/$"; "")),
+            id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
             title: .post_title,
             type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
             year: (if (.post_title | test("\\((19|20)[0-9]{2}\\)")) then (.post_title | capture("\\((?<year>(19|20)[0-9]{2})\\)").year) else null end),
