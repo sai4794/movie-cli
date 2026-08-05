@@ -138,12 +138,17 @@ verify_streams() {
                 "${referer_arg[@]}" \
                 "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
             # Curl 2: get HTTP status code
+            # --max-filesize: some servers ignore Range and stream the whole
+            # file (fsl-buckets, googleusercontent). Curl aborts with rc 63
+            # (or 28 on max-time) but STILL prints the received code — that is
+            # a live stream, and the first-bytes check above already validated
+            # it as video. Only a code of 000 (no response) or non-2xx fails.
             http_code=$(curl -so /dev/null -w "%{http_code}" \
-                -L --connect-timeout 4 --max-time 8 \
+                -L --connect-timeout 4 --max-time 8 --max-filesize 3145728 \
                 -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
-                "$url" 2>/dev/null) || http_code="000"
-            # Reject non-2xx responses
+                "$url" 2>/dev/null)
+            # Reject non-2xx responses (000 = connection failed / no response)
             [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
             # Reject empty hex (nothing returned)
             [[ -z "$hex" ]] && exit 0

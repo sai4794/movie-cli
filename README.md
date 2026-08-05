@@ -45,6 +45,16 @@ Playing: Inception (2010)
 - **Cross-platform** — Linux, macOS, Android (Termux)
 - **Zero-config** — works out of the box
 
+## Included Plugins
+
+- **CineStream** — Cinemeta search + Stremio addon resolution (Vidlink, NoTorrent2, WebStreamrMBG)
+- **MovieBlast** — MovieBlast API (signed HMAC requests)
+- **4KHDHub** — 4K movies/series from 4khdhub.one (HubCloud/HubDrive mirror chain)
+- **HDhub4u** — Hindi/English movies from new4.hdhub4u.cl (Typesense search API + HubDrive chain)
+
+Each plugin can be selected with `-p NAME`; the default `auto` merges all plugins.
+Plugin config overrides live in `~/.config/movie-cli/<plugin>.conf` (e.g. `BASE_URL=` for domain rotation).
+
 ## Installation
 
 ### Quick Install (Linux/macOS)
