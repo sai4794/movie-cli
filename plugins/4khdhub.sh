@@ -259,6 +259,10 @@ for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", h
             if [[ -n "$streams" ]]; then
                 printf '%s\n' "$streams" | while IFS= read -r su; do
                     [[ -z "$su" ]] && continue
+                    # Skip SAMPLE/trailer preview files (uploaders ship a 5-min
+                    # "SAMPLE-*.mkv" next to the real movie; it outranks it at
+                    # the same resolution in sort_streams)
+                    [[ "${su,,}" == *sample* ]] && continue
                     _4kh_stream_json "$su"
                 done > "$tmp_dir/out_${idx}.json"
             fi
