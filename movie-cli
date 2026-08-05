@@ -132,20 +132,25 @@ verify_streams() {
             fi
             local http_code hex
             # Curl 1: get first 16 bytes for content check
+            # NOTE: plain GET (no Range) — mirrors mpv's request shape. Some
+            # workers.dev proxies serve the first 1024 bytes on a Range probe
+            # (206) but 403 the full-file GET mpv opens; verifying with Range
+            # let those pass and fail at playback.
+            # head -c 16 closes the pipe → curl gets SIGPIPE → bounded. Do NOT
+            # add --max-filesize here: it aborts pre-transfer on large
+            # Content-Length and returns empty hex.
             hex=$(curl -s \
                 -L --connect-timeout 4 --max-time 8 \
-                -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
                 "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
             # Curl 2: get HTTP status code
-            # --max-filesize: some servers ignore Range and stream the whole
-            # file (fsl-buckets, googleusercontent). Curl aborts with rc 63
-            # (or 28 on max-time) but STILL prints the received code — that is
-            # a live stream, and the first-bytes check above already validated
-            # it as video. Only a code of 000 (no response) or non-2xx fails.
+            # --max-filesize: some servers stream the whole file (fsl-buckets,
+            # googleusercontent). Curl aborts with rc 63 (or 28 on max-time)
+            # but STILL prints the received code — that is a live stream, and
+            # the first-bytes check above already validated it as video. Only
+            # a code of 000 (no response) or non-2xx fails.
             http_code=$(curl -so /dev/null -w "%{http_code}" \
                 -L --connect-timeout 4 --max-time 8 --max-filesize 3145728 \
-                -H "Range: bytes=0-1023" \
                 "${referer_arg[@]}" \
                 "$url" 2>/dev/null)
             # Reject non-2xx responses (000 = connection failed / no response)
