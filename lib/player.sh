@@ -198,11 +198,18 @@ LUAEOF
     if [[ "${NO_DETACH:-0}" == "1" ]]; then
         "${cmd[@]}" &
         MPV_PID=$!
-        wait "$MPV_PID" 2>/dev/null || true
+        local _pv_rc=0
+        wait "$MPV_PID" 2>/dev/null || _pv_rc=$?
         MPV_PID=""
+        # Return mpv's exit code so callers can detect playback failure and
+        # fall back to the next mirror (CloudStream nextMirror behavior).
+        # 0 = user quit/finished, 130 = SIGINT (user interrupt) — neither is
+        # a stream failure; anything else means the stream failed to play.
+        return $_pv_rc
     else
         "${cmd[@]}" &>/dev/null &
         disown $! 2>/dev/null || true
+        return 0
     fi
 }
 

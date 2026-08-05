@@ -211,6 +211,88 @@ verify_streams() {
     printf '%s' "$result"
 }
 
+# ═══════════════════════════════════════════════════════════════
+# Playback with automatic mirror fallback (CloudStream nextMirror behavior)
+# Args:
+#   $1 = verified streams JSON array (sorted)
+#   $2 = resolve id (passed to plugin_get_url for fresh re-resolution)
+#   $3 = display label
+#   $4 = user-selected stream URL (played first; remaining tried in order)
+#   $5 = start_time for the first attempt (resume position; optional)
+# Flow: play selected → on failure try next stream → if all fail, re-resolve
+# fresh (new tokens = new mirror set) → try once more → return 1 if still dead.
+# Returns 0 if anything played (mpv exit 0/130 = user quit/interrupt = success).
+# ═══════════════════════════════════════════════════════════════
+play_with_fallback() {
+    local streams_json="$1"
+    local resolve_id="$2"
+    local label="$3"
+    local selected_url="$4"
+    local start_time="${5:-}"
+
+    local attempt=0
+    while (( attempt < 2 )); do
+        if (( attempt == 1 )); then
+            ui_info "All mirrors failed — re-resolving fresh mirrors..."
+            streams_json=$(plugin_get_url "$resolve_id" "$quality" 2>/dev/null || printf '[]')
+            streams_json=$(sort_streams "$streams_json")
+            streams_json=$(verify_streams "$streams_json")
+        fi
+
+        # Build play order: selected URL first (attempt 0 only), then the rest
+        # in given order. On re-resolve (attempt 1) the selected URL is already
+        # known dead — don't re-prepend it.
+        local play_order=()
+        local i=0 seen_selected=0
+        local count
+        count=$(printf '%s' "$streams_json" | jq 'length' 2>/dev/null || echo 0)
+        while (( i < count )); do
+            local u
+            u=$(printf '%s' "$streams_json" | jq -r ".[$i].url // empty" 2>/dev/null || true)
+            if [[ "$attempt" == "0" && -n "$selected_url" && "$u" == "$selected_url" && "$seen_selected" == "0" ]]; then
+                play_order=("$selected_url" "${play_order[@]}")
+                seen_selected=1
+            else
+                [[ -n "$u" ]] && play_order+=("$u")
+            fi
+            i=$((i + 1))
+        done
+        if [[ "$attempt" == "0" && "$seen_selected" == "0" && -n "$selected_url" ]]; then
+            play_order=("$selected_url" "${play_order[@]}")
+        fi
+
+        local played=0 first=1
+        for url in "${play_order[@]}"; do
+            if (( first == 0 )); then
+                ui_info "Previous stream failed — trying next mirror..."
+            fi
+            if declare -f plugin_sign_url >/dev/null 2>&1; then
+                url=$(plugin_sign_url "$url")
+            fi
+
+            local rc=0
+            status_msg "Playing: $label"
+            local saved_no_detach="$NO_DETACH"
+            NO_DETACH=1
+            play_video "$url" "$start_time" || rc=$?
+            NO_DETACH="$saved_no_detach"
+
+            # 0 = user quit/finished, 130 = SIGINT — both are "played enough"
+            if (( rc == 0 || rc == 130 )); then
+                played=1
+                break
+            fi
+            warn "Playback failed (rc=$rc) — trying next mirror..."
+            first=0
+            start_time=""  # resume position applies only to the first attempt
+        done
+
+        (( played == 1 )) && return 0
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
 
 # ═══════════════════════════════════════════════════════════════
 # Dependency Check
@@ -482,23 +564,18 @@ search_and_play() {
             select_stream "Select stream: " "${ep_streams[@]}" || die_plugin "No stream selected"
             selected_stream="$_SELECT_ITEM_RESULT"
 
-            local video_url
-            video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
-            [[ -z "$video_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
-
-            # Re-sign URL at playback time
-            if declare -f plugin_sign_url >/dev/null 2>&1; then
-                    video_url=$(plugin_sign_url "$video_url")
-            fi
+            local selected_url
+            selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+            [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
 
             history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
             status_msg "Playing: $selected_title - $ep_title (S${ep_season}E${ep_num})"
 
-            # Attached playback for series menu navigation
-            local saved_no_detach="$NO_DETACH"
-            NO_DETACH=1
-            play_video "$video_url"
-            NO_DETACH="$saved_no_detach"
+            # Auto next-mirror: on playback failure try remaining streams, then
+            # re-resolve fresh once (CloudStream behavior)
+            if ! play_with_fallback "$qualities_json" "$ep_id" "$selected_title - $ep_title (S${ep_season}E${ep_num})" "$selected_url"; then
+                die_plugin "No playable streams for: $selected_title - $ep_title"
+            fi
             # ponytail: save final position for --continue
             local end_pos
             end_pos=$(get_mpv_position 2>/dev/null || echo 0)
@@ -583,22 +660,17 @@ search_and_play() {
     select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
     selected_stream="$_SELECT_ITEM_RESULT"
 
-    local video_url
-    video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
-    [[ -z "$video_url" ]] && die_plugin "No video URL for: $selected_title"
-
-    # Re-sign URL at playback time (some plugins sign URLs that expire)
-    if declare -f plugin_sign_url >/dev/null 2>&1; then
-            video_url=$(plugin_sign_url "$video_url")
-    fi
+    local selected_url
+    selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+    [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title"
 
     history_add "$selected_title" "$selected_plugin_match" "$selected_id" "movie"
-    status_msg "Playing: $selected_title"
     prof_start "player_launch"
-    local saved_no_detach="$NO_DETACH"
-    NO_DETACH=1
-    play_video "$video_url"
-    NO_DETACH="$saved_no_detach"
+    # Auto next-mirror: on playback failure try remaining streams, then
+    # re-resolve fresh once (CloudStream behavior)
+    if ! play_with_fallback "$qualities_json" "$selected_id" "$selected_title" "$selected_url"; then
+        die_plugin "No playable streams for: $selected_title"
+    fi
     prof_end
     # ponytail: save final position for --continue
     local end_pos
@@ -713,19 +785,19 @@ main() {
         select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
         selected_stream="$_SELECT_ITEM_RESULT"
 
-        local video_url
-        video_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
-        [[ -z "$video_url" ]] && die_plugin "No video URL"
-
-        if declare -f plugin_sign_url >/dev/null 2>&1; then
-            video_url=$(plugin_sign_url "$video_url")
-        fi
+        local selected_url
+        selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+        [[ -z "$selected_url" ]] && die_plugin "No video URL"
 
         local start_time=""
         (( last_progress > 0 )) && start_time="$last_progress"
 
         status_msg "Resuming: $(printf '%s' "$last_entry" | jq -r '.title')"
-        play_video "$video_url" "$start_time"
+        # Auto next-mirror: on playback failure try remaining streams, then
+        # re-resolve fresh once (CloudStream behavior)
+        if ! play_with_fallback "$qualities_json" "$resume_id" "$(printf '%s' "$last_entry" | jq -r '.title')" "$selected_url" "$start_time"; then
+            die_plugin "No playable streams for last watched entry"
+        fi
         # ponytail: save position for next --continue
         local end_pos
         end_pos=$(get_mpv_position 2>/dev/null || echo 0)
