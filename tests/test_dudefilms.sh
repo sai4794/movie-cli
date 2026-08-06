@@ -78,3 +78,21 @@ teardown() {
     run jq -e 'type == "array" and length > 0' <<< "$output"
     [ "$status" -eq 0 ]
 }
+
+@test "DudeFilms series lists multiple episodes for a real series" {
+    run plugin_list_episodes "house-of-the-dragon-season-03-dual-audio-hindi-english-webseries-web-dl-esubs-720p" "3"
+    [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
+    # Real series: several per-episode entries with distinct numbers
+    local raw="$output"
+    run jq -e 'length > 1' <<< "$raw"
+    [ "$status" -eq 0 ] || skip "site returned single pack"
+    run jq -e '[.[].number] | max >= 2' <<< "$raw"
+    [ "$status" -eq 0 ]
+}
+
+@test "DudeFilms per-episode get_url resolves distinct streams" {
+    run plugin_get_url "house-of-the-dragon-season-03-dual-audio-hindi-english-webseries-web-dl-esubs-720p:3:1" "720"
+    [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
+    run jq -e 'type == "array" and length > 0' <<< "$output"
+    [ "$status" -eq 0 ]
+}

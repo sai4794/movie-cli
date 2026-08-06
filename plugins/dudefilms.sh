@@ -280,6 +280,42 @@ _df_resolve_archive() {
     done
 }
 
+# Resolve ONE episode (Nth maxbutton-ep anchor) from an archive page.
+# Archive pages list per-episode buttons: <a class="...maxbutton-ep..."
+# href="hubcloud-drive"><span class='mb-text'>Episode 01</span></a>
+_df_resolve_archive_episode() {
+    local arch_url="$1"
+    local want_ep="$2"
+    local page
+
+    # Archive hop can be flaky — retry once
+    page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
+    if [[ -z "$page" ]]; then
+        sleep 1
+        page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
+    fi
+    [[ -z "$page" ]] && return 1
+
+    # Extract the anchor for the wanted episode number (zero-padded label)
+    local target
+    target=$(printf '%02d' "$want_ep" 2>/dev/null || printf '%s' "$want_ep")
+    local ep_url
+    ep_url=$(printf '%s' "$page" | grep -oE "<a[^>]*class=\"[^\"]*maxbutton-ep[^\"]*\"[^>]*href=\"[^\"]+\"[^>]*><span[^>]*>Episode[[:space:]]*${target}[[:space:]]*</span>" | head -1 | grep -oE 'href="[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
+    [[ -z "$ep_url" ]] && return 1
+
+    # Resolve per host family (hubcloud drive chain, or direct candidate)
+    case "$ep_url" in
+        *hubcloud*|*hubdrive*)
+            _df_resolve_hubcloud "$ep_url"
+            ;;
+        *)
+            if _df_is_stream_candidate "$ep_url"; then
+                printf '%s\n' "$ep_url"
+            fi
+            ;;
+    esac
+}
+
 # ═══════════════════════════════════════════════════════════════
 # Plugin API (v5)
 # ═══════════════════════════════════════════════════════════════
@@ -330,7 +366,8 @@ plugin_get_url() {
     _load_df_config
     _df_load_domains
 
-    # Series episode id "series:season:episode" — same archive links for all
+    # Series episode id "series:season:episode" — resolve ONLY that episode's
+    # link from each archive (archives list per-episode maxbutton-ep anchors)
     local series_id="" season="" episode=""
     if [[ "$id" == *:*:* ]]; then
         IFS=':' read -r series_id season episode <<< "$id"
@@ -355,7 +392,12 @@ plugin_get_url() {
         [[ -z "$link" ]] && continue
         (
             local streams=""
-            streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
+            if [[ -n "$episode" ]]; then
+                # Per-episode: pick the Nth maxbutton-ep anchor from the archive
+                streams=$(_df_resolve_archive_episode "$link" "$episode" 2>/dev/null || true)
+            else
+                streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
+            fi
             if [[ -n "$streams" ]]; then
                 printf '%s\n' "$streams" | while IFS= read -r su; do
                     [[ -z "$su" ]] && continue
@@ -402,10 +444,35 @@ plugin_list_episodes() {
     _load_df_config
     _df_load_domains
 
-    # Series posts bundle episodes into the same archive links; expose one
-    # entry per season pack (matches CSX behavior)
-    printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"season":%s}]\n' \
-        "$series_id" "$season_number" "$season_number" "$season_number"
+    # Fetch the detail page → archive pages → count maxbutton-ep anchors
+    # (each = one episode; e.g. HOTD S3 has "Episode 01".."Episode 07")
+    local html arch_links ep_count
+    html=$(curl "${_DF_CURL[@]}" "${_DF_BASE}/${series_id}/" 2>/dev/null) || return 1
+    [[ -z "$html" ]] && return 1
+
+    arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.online/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    ep_count=0
+    if [[ -n "$arch_links" ]]; then
+        local first_arch
+        first_arch=$(printf '%s\n' "$arch_links" | head -1)
+        local arch_page
+        arch_page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$first_arch" 2>/dev/null || true)
+        if [[ -z "$arch_page" ]]; then
+            sleep 1
+            arch_page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$first_arch" 2>/dev/null || true)
+        fi
+        ep_count=$(printf '%s' "$arch_page" | grep -oE 'Episode[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | tail -1 2>/dev/null || echo 0)
+        [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$arch_page" | grep -cE 'maxbutton-ep' 2>/dev/null || echo 0)
+    fi
+    [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
+
+    # Emit one episode entry per found episode (contract field is "episode")
+    local i eps_json="[]"
+    for (( i = 1; i <= ep_count; i++ )); do
+        eps_json=$(printf '%s' "$eps_json" | jq -c --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
+            '. + [{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}]' 2>/dev/null)
+    done
+    printf '%s\n' "$eps_json"
 }
 
 plugin_health() {

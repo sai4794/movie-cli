@@ -374,7 +374,7 @@ plugin_list_episodes() {
     # expose one "episode" entry per season pack (matches CSX behavior of
     # one EpisodeLink per season/quality block).
     local ep_num="${season_number:-1}"
-    printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"season":%s}]\n' \
+    printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"episode":1,"season":%s}]\n' \
         "$series_id" "$season_number" "$season_number" "$season_number"
 }
 
