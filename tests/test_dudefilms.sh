@@ -72,6 +72,16 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "DudeFilms multi-season post lists all seasons" {
+    run plugin_list_seasons "house-of-the-dragon-season-1-2-dual-audio-hindi-english-web-series-bluray-esub-720p"
+    [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
+    local raw="$output"
+    run jq -e 'type == "array" and length > 1' <<< "$raw"
+    [ "$status" -eq 0 ] || skip "site returned single season"
+    run jq -e '[.[].number] | contains([1, 2])' <<< "$raw"
+    [ "$status" -eq 0 ]
+}
+
 @test "DudeFilms series episodes are extracted per season" {
     run plugin_list_episodes "some-series-slug" "1"
     [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"

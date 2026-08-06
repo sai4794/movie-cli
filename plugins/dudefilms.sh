@@ -380,9 +380,32 @@ plugin_get_url() {
     html=$(curl "${_DF_CURL[@]}" "$detail_url" 2>/dev/null) || die_network "DudeFilms detail page fetch failed"
     [[ -z "$html" ]] && die_plugin "Empty DudeFilms detail page"
 
-    # Archive link pages (dflinks.online/archives/N)
+    # Archive link pages (dflinks.online/archives/N), grouped by season:
+    # each archive belongs to the nearest preceding "Season N" heading.
     local arch_links
-    arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.online/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    if [[ -n "$season" ]]; then
+        arch_links=$(printf '%s' "$html" | python3 -c '
+import sys, re
+page = sys.stdin.read()
+want = int(sys.argv[1])
+# walk through, tracking the last "Season N" heading before each archive link
+links = re.findall(r"https://dflinks\.online/archives/\d+", page)
+# find positions of season headings and archive links
+seasons = [(m.start(), int(m.group(1))) for m in re.finditer(r"Season\s*(\d+)", page, re.I)]
+for l in links:
+    lpos = page.find(l)
+    cur = 1
+    for spos, snum in seasons:
+        if spos < lpos:
+            cur = snum
+        else:
+            break
+    if cur == want:
+        print(l)
+' "$season" 2>/dev/null | sort -u || true)
+    else
+        arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.online/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    fi
     [[ -z "$arch_links" ]] && die_plugin "No archive links on DudeFilms page for: $id"
 
     local tmp_dir
@@ -431,11 +454,29 @@ plugin_list_seasons() {
     html=$(curl "${_DF_CURL[@]}" "${_DF_BASE}/${series_id}/" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    local season
-    season=$(printf '%s' "$html" | grep -oiE 'Season [0-9]+' | head -1 | grep -oE '[0-9]+' 2>/dev/null || true)
-    [[ -z "$season" ]] && season="1"
+    # Parse ALL "Season N" headings from the page (dedupe, ascending).
+    # Multi-season posts (e.g. "Season 1-2") have one heading per season.
+    local seasons_json
+    seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | jq -c '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
 
-    printf '[{"id":"%s","title":"Season %s","number":%s}]\n' "$season" "$season" "$season"
+    # Fallback: title range like "Season 1-2" or "Season 1 – 2"
+    if [[ -z "$seasons_json" || "$seasons_json" == "[]" ]]; then
+        local range
+        range=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+[[:space:]]*[-–][[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -2 | tr '\n' ' ')
+        local s1 s2
+        s1=$(printf '%s' "$range" | awk '{print $1}')
+        s2=$(printf '%s' "$range" | awk '{print $2}')
+        if [[ -n "$s1" && -n "$s2" && "$s2" -gt "$s1" ]]; then
+            seasons_json="[]"
+            local i
+            for (( i = s1; i <= s2; i++ )); do
+                seasons_json=$(printf '%s' "$seasons_json" | jq -c --argjson n "$i" '. + [{"id": ($n|tostring), "title": ("Season " + ($n|tostring)), "number": $n}]' 2>/dev/null)
+            done
+        fi
+    fi
+
+    [[ -z "$seasons_json" || "$seasons_json" == "[]" ]] && seasons_json='[{"id":"1","title":"Season 1","number":1}]'
+    printf '%s\n' "$seasons_json"
 }
 
 plugin_list_episodes() {
