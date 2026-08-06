@@ -291,7 +291,7 @@ plugin_search() {
     _df_load_domains
 
     local html
-    html=$(curl "${_DF_CURL[@]}" "${_DF_BASE}/?s=${query}" 2>/dev/null) || return 1
+    html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
     # WordPress search results: article links + titles
