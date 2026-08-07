@@ -372,7 +372,16 @@ for m in re.finditer(r"<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,15
     ym = re.search(r"\((\d{4})\)|(19|20)\d{2}", title)
     if ym:
         year = ym.group(1) or ym.group(0)
-    out.append({"id": slug, "title": title, "type": tvtype, "year": year, "rating": None, "poster": None})
+    # Clean SEO title -> simple "Name (Year)" (match MovieBlast style)
+    ctitle = re.sub(r"^Download\s+", "", title, flags=re.I)
+    ctitle = re.sub(r"\[[^\]]*\]", " ", ctitle)
+    ctitle = re.sub(r"\{[^}]*\}", " ", ctitle)
+    ctitle = re.sub(r"\s*(4K|[0-9]+p)\s*.*$", "", ctitle, flags=re.I)
+    ctitle = re.sub(r"\s*(?:\bDual Audio\b|\bMulti Audio\b|\bWEB-? ?DL\b|\bWEBRip\b|\bBluRay\b|\bHDTS\b|\bHDTC\b|\bHDCAM\b|\bCAMRip\b|\bPREHD\b|\bx264\b|\bx265\b|\b10Bit\b|\bHEVC\b|\bESub[s]?\b|\bFull Movie\b|\bWeb Series\b|\bWEBSeries\b|\bAnime Series\b|\bHindi Dubbed\b|\bHindi\b|\bEnglish\b|\bTelugu\b|\bTamil\b|\bKannada\b|\bMalayalam\b|\bPunjabi\b|\bDubbed\b|\bORG\b|\bMovie\b|\bHQ\b|\bV[0-9]+\b|\bNetFlix\b|\bNetflix\b|\bAmazon Prime\b|\bPrime Video\b|\bHotstar\b|\bDisney\+? ?Hotstar\b|\bJioCinema\b|\bJio\b|\bMX Player\b|\bSonyLiv\b|\bZee5\b|\bApple TV\b|\bHBO Max\b|\bHBO Original\b|\bHBO\b)\s*", " ", ctitle, flags=re.I)
+    ctitle = re.sub(r"\s+", " ", ctitle)
+    ctitle = ctitle.strip(" -–|")
+    ctitle = re.sub(r"\s+", " ", ctitle).strip()
+    out.append({"id": slug, "title": ctitle, "type": tvtype, "year": year, "rating": None, "poster": None})
 # dedupe by id
 seen = set()
 dedup = []
