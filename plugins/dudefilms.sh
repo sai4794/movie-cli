@@ -330,17 +330,41 @@ plugin_search() {
     html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    # WordPress search results: article links + titles
+    # WordPress search results: article links + titles.
+    # Relevance filter: WordPress falls back to the recent-posts grid when a
+    # query matches nothing (e.g. "kgf" vs dotted titles "K.G.F") — those
+    # unrelated rows must not surface in the CLI. Keep only results whose
+    # normalized title shares a significant token with the normalized query.
     printf '%s' "$html" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
+query = sys.argv[1].lower()
 out = []
+
+def norm(s):
+    # lowercase, drop non-alphanumerics: "K.G.F" -> "kgf", "4k hd" -> "4khd"
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+# significant query tokens (len >= 3 after normalization); fall back to the
+# whole normalized query if no token qualifies
+qtokens = [t for t in re.split(r"[^a-z0-9]+", query) if len(t) >= 3]
+if not qtokens:
+    qtokens = [re.sub(r"[^a-z0-9]", "", query)]
+qnorm = norm(query)
+
 # article entries: <a href=".../slug/">Title</a> inside article/h2 blocks
 for m in re.finditer(r"<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,150})</a>", page):
     url, title = m.group(1), h.unescape(m.group(2)).strip()
     if any(x in url for x in ("/tag/", "/category/", "/page/", "/author/", "feed", "#", "?s=")):
         continue
     if not re.search(r"download|movie|season|series|\b\d{4}\b", url + " " + title, re.I):
+        continue
+    tnorm = norm(title)
+    # relevance: any significant query token present in the normalized title,
+    # or the full normalized query as a substring
+    if qnorm and qnorm in tnorm:
+        pass
+    elif not any(t in tnorm for t in qtokens):
         continue
     slug = url.rstrip("/").rsplit("/", 1)[-1]
     tvtype = "series" if re.search(r"season|series|s\d{2}|e\d{2}", title, re.I) else "movie"
@@ -357,7 +381,7 @@ for o in out:
         seen.add(o["id"])
         dedup.append(o)
 print(__import__("json").dumps(dedup))
-' 2>/dev/null || printf '[]'
+' "$query" 2>/dev/null || printf '[]'
 }
 
 plugin_get_url() {

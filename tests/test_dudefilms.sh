@@ -49,6 +49,15 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "DudeFilms search filters unrelated WordPress fallback rows" {
+    # WordPress falls back to recent posts when a query matches nothing
+    # (e.g. "kgf" vs dotted titles "K.G.F") — those must not surface.
+    run plugin_search "kgf" "720"
+    [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
+    run jq -e 'type == "array" and length == 0' <<< "$output"
+    [ "$status" -eq 0 ] || skip "KGF now present on the site"
+}
+
 @test "DudeFilms get_url returns playable stream candidates" {
     run plugin_get_url "salaar-2023-dual-audio-hindi-telugu-movie-web-dl-esub-480p-720p-1080p" "720"
     [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
