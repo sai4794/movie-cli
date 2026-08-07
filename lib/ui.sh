@@ -295,6 +295,8 @@ show_help() {
     printf "  -D, --delete-history   Delete watch history\n\n" >&2
     printf "${C_BOLD}System:${C_RESET}\n" >&2
     printf "  -u, --update           Self-update from GitHub\n" >&2
+    printf "  update                 Same as --update (positional command)\n" >&2
+    printf "      --update-check     Check for updates without applying\n" >&2
     printf "      --list-plugins     List available plugins\n" >&2
     printf "      --check-deps       Verify all dependencies\n" >&2
     printf "      --debug            Enable debug logging\n" >&2

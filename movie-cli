@@ -21,6 +21,7 @@ source "$LIB_DIR/cache.sh"
 source "$LIB_DIR/ui.sh"
 source "$LIB_DIR/player.sh"
 source "$LIB_DIR/history.sh"
+source "$LIB_DIR/update.sh"
 
 # ═══════════════════════════════════════════════════════════════
 # Plugin System
@@ -692,6 +693,9 @@ main() {
             -v|--version)  show_version; exit 0 ;;
             -h|--help)     show_help; exit 0 ;;
             --clear-cache) cache_clear; ui_success "Cache cleared."; exit 0 ;;
+            -u|--update)   update_self; exit $? ;;
+            update)        update_self; exit $? ;;
+            --update-check) UPDATE_CHECK_ONLY=1; update_self; exit $? ;;
         esac
     done
 
@@ -721,7 +725,6 @@ main() {
             -l|--log)        log_view=1; shift ;;
             -D|--delete-history) delete_history=1; shift ;;
             -c|--continue)   continue_watch=1; shift ;;
-            -u|--update)     die_user "Self-update not yet implemented" ;;
             --list-plugins)  list_plugins_flag=1; shift ;;
             --check-deps)    check_deps; ui_success "All dependencies OK."; exit 0 ;;
             --debug)         DEBUG=1; VERBOSE=1; shift ;;
