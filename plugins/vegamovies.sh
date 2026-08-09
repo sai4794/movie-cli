@@ -350,9 +350,33 @@ plugin_get_url() {
     html=$(curl "${_VM_CURL[@]}" "$detail_url" 2>/dev/null) || die_network "VegaMovies detail page fetch failed"
     [[ -z "$html" ]] && die_plugin "Empty VegaMovies detail page"
 
-    # nexdrive resolver links — the download buttons on the page
+    # nexdrive resolver links — the download buttons on the page.
+    # For series episodes "series:season:episode", keep only the links that
+    # belong to the requested season (nearest preceding "Season N" marker).
     local nx_links
-    nx_links=$(printf '%s' "$html" | grep -oE 'href="https://nexdrive\.fit/genxfm[0-9]+/"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    if [[ -n "$season" ]]; then
+        nx_links=$(printf '%s' "$html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = int(sys.argv[1])
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", m.group(1)))
+for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+cur = "0"
+out = []
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    elif cur == str(want):
+        out.append(val)
+print("\n".join(dict.fromkeys(out)))
+' "$season" 2>/dev/null || true)
+    else
+        nx_links=$(printf '%s' "$html" | grep -oE 'href="https://nexdrive\.fit/genxfm[0-9]+/"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    fi
     [[ -z "$nx_links" ]] && die_plugin "No resolver links on VegaMovies page for: $id"
 
     local tmp_dir
@@ -396,9 +420,11 @@ plugin_list_seasons() {
     html=$(curl "${_VM_CURL[@]}" "${_VM_BASE}/${series_id}/" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    # Season-pack post: "Season N" headings → one season entry each
+    # Season-pack post: "Season N" headings → one season entry each.
+    # NOTE: jq needs -s here — without it every sort line is a separate
+    # input and the output collapses to an empty/partial array.
     local seasons_json="[]"
-    seasons_json=$(printf '%s' "$html" | grep -oE 'Season [0-9]+' | grep -oE '[0-9]+' | sort -un | jq -c '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
+    seasons_json=$(printf '%s' "$html" | grep -oE 'Season [0-9]+' | grep -oE '[0-9]+' | sort -un | jq -sc 'map({id: (.|tostring), title: ("Season " + (.|tostring)), number: .})' 2>/dev/null || true)
     if [[ -z "$seasons_json" || "$seasons_json" == "[]" ]]; then
         seasons_json='[{"id":"1","title":"Season 1","number":1}]'
     fi
@@ -411,12 +437,42 @@ plugin_list_episodes() {
     _load_vm_config
     _vm_load_domains
 
-    # Season-pack posts bundle all episodes into the same resolver links;
-    # expose one "episode" entry per season pack (matches CSX behavior of
-    # one EpisodeLink per season/quality block).
-    local ep_num="${season_number:-1}"
-    printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"episode":1,"season":%s}]\n' \
-        "$series_id" "$season_number" "$season_number" "$season_number"
+    # Season-pack posts group their nexdrive resolver links under per-season
+    # headings ("Season 1" / "Season 2" ...). Walk the page, assign each
+    # nexdrive link to the nearest preceding "Season N" marker, and expose
+    # one episode entry per link of the requested season (in page order).
+    local html
+    html=$(curl "${_VM_CURL[@]}" "${_VM_BASE}/${series_id}/" 2>/dev/null) || return 1
+    [[ -z "$html" ]] && return 1
+
+    printf '%s' "$html" | python3 -c '
+import sys, re, json
+html = sys.stdin.read()
+want = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+sid = sys.argv[2] if len(sys.argv) > 2 else ""
+# tokenize: season markers and nexdrive links in document order
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", int(m.group(1))))
+for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+# assign each link to the last season marker seen before it
+cur = 0
+per_season = {}
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    else:
+        per_season.setdefault(cur, []).append(val)
+links = per_season.get(want, [])
+out = []
+for i, link in enumerate(links, 1):
+    out.append({"id": "%s:%s:%d" % (sid, want, i),
+                "title": "Episode %d" % i,
+                "season": want, "episode": i})
+print(json.dumps(out))
+' "$season_number" "$series_id" 2>/dev/null
 }
 
 plugin_health() {

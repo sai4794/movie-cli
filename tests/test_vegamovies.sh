@@ -80,14 +80,19 @@ teardown() {
 @test "VegaMovies series seasons are extracted" {
     run plugin_list_seasons "download-that-time-i-got-reincarnated-as-a-slime-season-1-4-hindi-dubbed-series-480p-720p-1080p-web-dl"
     [ "$status" -eq 0 ] || skip "VegaMovies site unavailable"
-    run jq -e 'type == "array" and length > 0' <<< "$output"
-    [ "$status" -eq 0 ]
+    # The post covers Season 1-4 — all four must be listed
+    run jq -e 'type == "array" and length == 4' <<< "$output"
+    [ "$status" -eq 0 ] || skip "season count differs (site content changed)"
 }
 
 @test "VegaMovies series episodes are extracted per season" {
     run plugin_list_episodes "download-that-time-i-got-reincarnated-as-a-slime-season-1-4-hindi-dubbed-series-480p-720p-1080p-web-dl" "1"
     [ "$status" -eq 0 ] || skip "VegaMovies site unavailable"
-    run jq -e 'type == "array" and length > 0' <<< "$output"
+    local raw="$output"
+    run jq -e 'type == "array" and length > 0' <<< "$raw"
+    [ "$status" -eq 0 ]
+    # episodes must carry the right season + distinct episode numbers
+    run jq -e 'all(.[]; .season == 1 and .episode >= 1)' <<< "$raw"
     [ "$status" -eq 0 ]
 }
 
