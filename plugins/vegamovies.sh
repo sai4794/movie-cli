@@ -166,12 +166,64 @@ _vm_resolve_vcloud() {
     page=$(curl -sL --connect-timeout 6 --max-time 12 -A "$_VM_UA" "$vc_url" 2>/dev/null) || return 1
     [[ -z "$page" ]] && return 1
 
+    # /video/ pages (hubcloud.lol/video/<id> etc): the CSX extractor takes
+    # div.vd > center > a — the hubcloud.php resolver link. Follow it and
+    # collect its btn links (R2/pixeldrain/gpdl).
+    if [[ "$vc_url" == *"/video/"* ]]; then
+        local resolver
+        resolver=$(printf '%s' "$page" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+m = re.search(r"<div[^>]*class=\"[^\"]*vd[^\"]*\"[^>]*>(.*?)</div>", html, re.S)
+if m:
+    a = re.search(r"<a[^>]*href=\"([^\"]+)\"", m.group(1))
+    if a and "hubcloud.php" in a.group(1):
+        print(a.group(1))
+' 2>/dev/null || true)
+        if [[ -n "$resolver" ]]; then
+            local rpage
+            rpage=$(curl -sL --connect-timeout 6 --max-time 12 -A "$_VM_UA" "$resolver" 2>/dev/null || true)
+            if [[ -n "$rpage" ]]; then
+                printf '%s' "$rpage" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+out = []
+for m in re.finditer(r"<a[^>]*href=\"(https?://[^\"]+)\"[^>]*class=\"[^\"]*btn[^\"]*\"", html):
+    h = m.group(1)
+    if any(k in h for k in ("pixeldrain", "gpdl", "r2.dev", "cloudflarestorage", "hubcloud")):
+        out.append(h)
+seen = list(dict.fromkeys(out))
+for l in seen:
+    print(l)
+' 2>/dev/null | while IFS= read -r l; do
+                    if [[ "$l" == *pixeldrain* && "$l" != *"/api/file/"* ]]; then
+                        printf '%s\n' "https://pixeldrain.dev/api/file/${l##*/}?download"
+                    else
+                        printf '%s\n' "$l"
+                    fi
+                done | sort -u
+                return 0
+            fi
+        fi
+    fi
+
     # Direct links on the page already? (r2/gpdl2 present without token hop).
     # Exclude signup.php — that's a decoy ad page, not a stream.
+    # NOTE: hubcloud /video/ links are NOT direct — they lead to a resolver
+    # whose content may differ from this token's file; the real streams are
+    # the FSL/Mega/Pixel/10Gbps buttons on the token page below.
     local direct
-    direct=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' <>]*' | grep -E 'r2\.cloudflarestorage|gpdl[0-9]*\.hubcloud|/video/' | grep -v 'signup\.php' | sort -u 2>/dev/null || true)
+    direct=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' <>]*' | grep -E 'r2\.cloudflarestorage|gpdl[0-9]*\.hubcloud' | grep -v 'signup\.php' | grep -vE 'unpkg|site\.webmanifest' | sort -u 2>/dev/null || true)
     if [[ -n "$direct" ]]; then
-        printf '%s\n' "$direct"
+        while IFS= read -r l; do
+            if [[ "$l" == *pixeldrain.dev/u/* ]]; then
+                local dpid
+                dpid=${l##*/}
+                printf '%s\n' "https://pixeldrain.dev/api/file/${dpid}?download"
+            else
+                printf '%s\n' "$l"
+            fi
+        done <<< "$direct"
         return 0
     fi
 
@@ -232,9 +284,11 @@ for l in seen:
 ' 2>/dev/null || true)
     if [[ -n "$found" ]]; then
         # Normalize pixeldrain short-links to API download form (matches
-        # CSX: base + /api/file/<id>?download)
+        # CSX: base + /api/file/<id>?download).
         while IFS= read -r l; do
-            if [[ "$l" == *pixeldrain.dev/u/* ]]; then
+            if [[ "$l" == *"/video/"* ]]; then
+                continue  # hubcloud video decoy — not this token's file
+            elif [[ "$l" == *pixeldrain.dev/u/* ]]; then
                 local id
                 id=${l##*/}
                 printf '%s\n' "https://pixeldrain.dev/api/file/${id}?download"
@@ -246,7 +300,9 @@ for l in seen:
     fi
 
     # Fallback: raw string grep (older page shapes with inline links)
-    printf '%s' "$tok_page" | grep -oE 'https?://[^"'"'"' <>]*' | grep -E 'r2\.cloudflarestorage|gpdl[0-9]*\.hubcloud|/video/|\.mkv|\.mp4' | sort -u 2>/dev/null || true
+    local fgrep
+    fgrep=$(printf '%s' "$tok_page" | grep -oE 'https?://[^"'"'"' <>]*' | grep -E 'r2\.cloudflarestorage|gpdl[0-9]*\.hubcloud|\.mkv|\.mp4' | grep -vE 'unpkg|site\.webmanifest' | sort -u 2>/dev/null || true)
+    [[ -n "$fgrep" ]] && printf '%s\n' "$fgrep"
 }
 
 # Resolve one nexdrive.fit/genxfm... resolver page → candidate stream URLs.
@@ -428,6 +484,10 @@ for pos, kind, val in tokens:
         out.append(val)
 print("\n".join(dict.fromkeys(out)))
 ' "$season" 2>/dev/null || true)
+        # find that episode's OWN playable link on the episode-links page.
+        # The page lists FIVE host families per episode (vcloud.fit,
+        # fastdl.zip, filebee, gdtot, dgdrive) — prefer vcloud/fastdl like
+        # CloudStream does (dgdrive is the ad-gated one).
         local link ep_html found=""
         while IFS= read -r link; do
             [[ -z "$link" ]] && continue
@@ -437,15 +497,19 @@ print("\n".join(dict.fromkeys(out)))
                 found=$(printf '%s' "$ep_html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
-want = sys.argv[1]
+want = int(sys.argv[1])
 labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
-links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(https://dgdrive\.pro/[^\"]+)\"", html)]
+# prefer vcloud.fit then fastdl.zip then dgdrive (ad-gated) as last resort
+families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
 for lpos, n in labels:
-    if n == int(want):
-        nxt = next((l for p2, l in links if p2 > lpos), None)
-        if nxt:
-            print(nxt)
-            break
+    if n == want:
+        for fam in families:
+            links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
+            nxt = next((l for p2, l in links if p2 > lpos), None)
+            if nxt:
+                print(nxt)
+                break
+        break
 ' "$episode" 2>/dev/null || true)
                 [[ -n "$found" ]] && break
             fi
@@ -506,7 +570,17 @@ print("\n".join(dict.fromkeys(out)))
         [[ -z "$link" ]] && continue
         (
             local streams=""
-            streams=$(_vm_resolve_nexdrive "$link" 2>/dev/null || true)
+            # Direct vcloud-family links (from the episode lookup) go
+            # straight to the VCloud resolver (double-atob + button menu).
+            # Other links are nexdrive resolver pages.
+            case "$link" in
+                *vcloud.fit*|*vcloud.zip*|*fastdl.zip*|*vcloud.org*)
+                    streams=$(_vm_resolve_vcloud "$link" 2>/dev/null || true)
+                    ;;
+                *)
+                    streams=$(_vm_resolve_nexdrive "$link" 2>/dev/null || true)
+                    ;;
+            esac
             if [[ -n "$streams" ]]; then
                 printf '%s\n' "$streams" | while IFS= read -r su; do
                     [[ -z "$su" ]] && continue
@@ -611,12 +685,19 @@ print("\n".join(dict.fromkeys(out)))
 import sys, re
 html = sys.stdin.read()
 labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
-links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(https://dgdrive\.pro/[^\"]+)\"", html)]
+# five host families per episode; prefer vcloud.fit then fastdl.zip then
+# dgdrive (ad-gated, last resort) — matches CloudStream (p > a vcloud)
+families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
+alllinks = {}
+for fam in families:
+    alllinks[fam] = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
 pairs = []
 for lpos, n in labels:
-    nxt = next((l for p2, l in links if p2 > lpos), None)
-    if nxt:
-        pairs.append((n, nxt))
+    for fam in families:
+        nxt = next((l for p2, l in alllinks[fam] if p2 > lpos), None)
+        if nxt:
+            pairs.append((n, nxt))
+            break
 for n, l in sorted(set(pairs)):
     print("%d|%s" % (n, l))
 ' 2>/dev/null || true)
