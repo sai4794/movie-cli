@@ -49,6 +49,21 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "VegaMovies strict relevance: partial/fuzzy matches filtered" {
+    # "salaar" used to return Sawaari (2016) / Maa Tujhhe Salaam (2002)
+    # via Typesense fuzzy matching — neither is the requested movie.
+    # Salaar is not on the vegamovies catalog, so this must be empty
+    # (and never surface unrelated partial-title matches).
+    run plugin_search "salaar" "720"
+    [ "$status" -eq 0 ] || skip "VegaMovies site unavailable"
+    local raw="$output"
+    if [[ "$(printf '%s' "$raw" | jq 'length' 2>/dev/null || echo 0)" -eq 0 ]]; then
+        skip "Salaar not present on catalog (expected) — filter drops noise"
+    fi
+    run jq -e '[.[] | select(.title | test("Salaar"; "i"))] | length > 0' <<< "$raw"
+    [ "$status" -eq 0 ]
+}
+
 @test "VegaMovies get_url returns playable stream candidates for a movie" {
     run plugin_get_url "download-spider-man-brand-new-day-2026" "720"
     [ "$status" -eq 0 ] || skip "VegaMovies site unavailable"

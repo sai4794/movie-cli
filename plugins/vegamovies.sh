@@ -293,9 +293,38 @@ plugin_search() {
             type: (if (.post_title | test("Season [0-9]|Series|TV"; "i")) then "series" else "movie" end),
             year: (if (.post_title | test("\\((19|20)[0-9]{2}\\)")) then (.post_title | capture("\\((?<year>(19|20)[0-9]{2})\\)").year) else null end),
             rating: null,
-            poster: .post_thumbnail
+            poster: .post_thumbnail,
+            _cat: (.category // [])
         }]
-    ' 2>/dev/null
+    ' 2>/dev/null | python3 -c '
+import sys, json, re
+items = json.load(sys.stdin)
+query = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+qtokens = [t for t in re.split(r"[^a-z0-9]+", query) if len(t) >= 3]
+if not qtokens:
+    qtokens = [re.sub(r"[^a-z0-9]", "", query)]
+qnorm = norm(query)
+out = []
+for it in items:
+    title = it.get("title") or ""
+    tnorm = norm(title)
+    twords = re.split(r"[^a-z0-9]+", title.lower())
+    cats = [norm(c) for c in (it.get("_cat") or [])]
+    if qnorm and qnorm in tnorm:
+        out.append(it)
+    elif qtokens and all(any(t == w for w in twords) for t in qtokens):
+        out.append(it)
+    elif qtokens and any(any(t == w for w in cats) for t in qtokens):
+        # category match (actor/language/quality searches etc.)
+        out.append(it)
+for o in out:
+    o.pop("_cat", None)
+print(json.dumps(out))
+' "$query" 2>/dev/null
 }
 
 plugin_get_url() {
