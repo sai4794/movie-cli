@@ -58,6 +58,19 @@ teardown() {
     [ "$status" -eq 0 ] || skip "KGF now present on the site"
 }
 
+@test "DudeFilms strict relevance: multi-word query keeps only exact match" {
+    # "all of us are dead" used to match any title containing the word
+    # "dead" (Deadstream, Darby and the Dead, ...). Now only the series
+    # itself (or other titles containing ALL query words) should pass.
+    run plugin_search "all of us are dead" "720"
+    [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
+    local raw="$output"
+    run jq -e 'type == "array" and length == 1' <<< "$raw"
+    [ "$status" -eq 0 ] || skip "site returned multiple results (still relevant)"
+    run jq -e '.[0].title | test("All of Us Are Dead"; "i")' <<< "$raw"
+    [ "$status" -eq 0 ]
+}
+
 @test "DudeFilms get_url returns playable stream candidates" {
     run plugin_get_url "salaar-2023-dual-audio-hindi-telugu-movie-web-dl-esub-480p-720p-1080p" "720"
     [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"

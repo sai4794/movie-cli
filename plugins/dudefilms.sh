@@ -334,7 +334,9 @@ plugin_search() {
     # Relevance filter: WordPress falls back to the recent-posts grid when a
     # query matches nothing (e.g. "kgf" vs dotted titles "K.G.F") — those
     # unrelated rows must not surface in the CLI. Keep only results whose
-    # normalized title shares a significant token with the normalized query.
+    # normalized title matches ALL significant query tokens (single shared
+    # token is too loose: "all of us are dead" would match any title
+    # containing "dead"), or contains the full normalized query.
     printf '%s' "$html" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
@@ -360,11 +362,16 @@ for m in re.finditer(r"<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,15
     if not re.search(r"download|movie|season|series|\b\d{4}\b", url + " " + title, re.I):
         continue
     tnorm = norm(title)
-    # relevance: any significant query token present in the normalized title,
-    # or the full normalized query as a substring
+    # relevance: the full normalized query must appear as a substring of the
+    # normalized title (catches "all of us are dead" -> "allofusaredead..."),
+    # OR every significant query token must appear as a WHOLE WORD in the
+    # title (substring matching would let "dead" match "deadstream"; a
+    # single-token match like "dead" in "Darby and the Dead" is never
+    # sufficient for a multi-word query).
+    twords_lower = re.split(r"[^a-z0-9]+", title.lower())
     if qnorm and qnorm in tnorm:
         pass
-    elif not any(t in tnorm for t in qtokens):
+    elif not all(any(t == w for w in twords_lower) for t in qtokens):
         continue
     slug = url.rstrip("/").rsplit("/", 1)[-1]
     tvtype = "series" if re.search(r"season|series|s\d{2}|e\d{2}", title, re.I) else "movie"
