@@ -438,41 +438,88 @@ plugin_list_episodes() {
     _vm_load_domains
 
     # Season-pack posts group their nexdrive resolver links under per-season
-    # headings ("Season 1" / "Season 2" ...). Walk the page, assign each
-    # nexdrive link to the nearest preceding "Season N" marker, and expose
-    # one episode entry per link of the requested season (in page order).
+    # headings ("Season 1" / "Season 2" ...). One of the links is the
+    # "Episode Links" page: it lists the REAL episodes as labeled
+    # "Episodes: NN:-" entries pointing to GDToT (dgdrive.pro) hosts.
+    # Two-level walk: season block → episode-links page → per-episode links.
     local html
     html=$(curl "${_VM_CURL[@]}" "${_VM_BASE}/${series_id}/" 2>/dev/null) || return 1
+    if [[ -z "$html" ]]; then
+        sleep 1
+        html=$(curl "${_VM_CURL[@]}" "${_VM_BASE}/${series_id}/" 2>/dev/null) || return 1
+    fi
     [[ -z "$html" ]] && return 1
 
-    printf '%s' "$html" | python3 -c '
-import sys, re, json
+    # 1) find the nexdrive link for this season (position-walk as in get_url)
+    local season_links
+    season_links=$(printf '%s' "$html" | python3 -c '
+import sys, re
 html = sys.stdin.read()
-want = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-sid = sys.argv[2] if len(sys.argv) > 2 else ""
-# tokenize: season markers and nexdrive links in document order
+want = sys.argv[1]
 tokens = []
 for m in re.finditer(r"Season\s*(\d+)", html):
-    tokens.append((m.start(), "S", int(m.group(1))))
+    tokens.append((m.start(), "S", m.group(1)))
 for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
     tokens.append((m.start(), "L", m.group(1)))
 tokens.sort(key=lambda t: t[0])
-# assign each link to the last season marker seen before it
-cur = 0
-per_season = {}
+cur = "0"
+out = []
 for pos, kind, val in tokens:
     if kind == "S":
         cur = val
-    else:
-        per_season.setdefault(cur, []).append(val)
-links = per_season.get(want, [])
-out = []
-for i, link in enumerate(links, 1):
-    out.append({"id": "%s:%s:%d" % (sid, want, i),
-                "title": "Episode %d" % i,
-                "season": want, "episode": i})
-print(json.dumps(out))
-' "$season_number" "$series_id" 2>/dev/null
+    elif cur == want:
+        out.append(val)
+print("\n".join(dict.fromkeys(out)))
+' "$season_number" 2>/dev/null || true)
+    [[ -z "$season_links" ]] && die_plugin "No season links for season $season_number"
+
+    # 2) find the "Episode Links" page among this season's links (its page
+    #    has per-episode labels); fetch it and extract labeled episodes.
+    #    The episode-links page is flaky — retry once before giving up.
+    local link ep_html
+    local episode_pairs=""
+    while IFS= read -r link; do
+        [[ -z "$link" ]] && continue
+        ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
+        if [[ -z "$ep_html" ]] || ! printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+            sleep 1
+            ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
+        fi
+        [[ -z "$ep_html" ]] && continue
+        if printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+            episode_pairs=$(printf '%s' "$ep_html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
+links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(https://dgdrive\.pro/[^\"]+)\"", html)]
+pairs = []
+for lpos, n in labels:
+    nxt = next((l for p2, l in links if p2 > lpos), None)
+    if nxt:
+        pairs.append((n, nxt))
+for n, l in sorted(set(pairs)):
+    print("%d|%s" % (n, l))
+' 2>/dev/null || true)
+            [[ -n "$episode_pairs" ]] && break
+        fi
+    done <<< "$season_links"
+
+    if [[ -z "$episode_pairs" ]]; then
+        # fallback: no episode-links page yet (fresh season) — one pack entry
+        printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"episode":1,"season":%s}]\n' \
+            "$series_id" "$season_number" "$season_number" "$season_number"
+        return 0
+    fi
+
+    # 3) emit one episode entry per labeled episode (id is the dgdrive link)
+    local json="[]"
+    while IFS='|' read -r n link; do
+        [[ -z "$n" || -z "$link" ]] && continue
+        json=$(printf '%s' "$json" | jq -c --arg id "${series_id}:${season_number}:${n}" \
+            --arg title "Episode $n" --argjson ep "$n" --argjson se "$season_number" \
+            --arg url "$link" '. + [{"id": $id, "title": $title, "episode": $ep, "season": $se, "url": $url}]')
+    done <<< "$episode_pairs"
+    printf '%s\n' "$json"
 }
 
 plugin_health() {
