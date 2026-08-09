@@ -308,7 +308,21 @@ plugin_search() {
         [.hits[]?.document |
         {
             id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
-            title: .post_title,
+            title: (.post_title
+                | sub("^Download "; "")
+                | gsub("\\[[^\\]]*\\]"; " ")
+                | gsub("\\{[^}]*\\}"; " ")
+                | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "")
+                | gsub("\\s*(?:\\bDual Audio\\b|\\bMulti Audio\\b|\\bWEB-? ?DL\\b|\\bWEBRip\\b|\\bBluRay\\b|\\bHDTS\\b|\\bHDTC\\b|\\bHDCAM\\b|\\bCAMRip\\b|\\bPREHD\\b|\\bx264\\b|\\bx265\\b|\\b10Bit\\b|\\bHEVC\\b|\\bESubs?\\b|\\bFull Movie\\b|\\bWeb Series\\b|\\bWEBSeries\\b|\\bAnime Series\\b|\\bSeries\\b|\\bHindi Dubbed\\b|\\bHindi\\b|\\bEnglish\\b|\\bTelugu\\b|\\bTamil\\b|\\bKannada\\b|\\bMalayalam\\b|\\bPunjabi\\b|\\bDubbed\\b|\\bORG\\b|\\bMovie\\b|\\bHQ\\b|\\bHD\\b|\\bNF\\b|\\bLiNE\\b|\\bDS\\b|\\bUNCUT\\b|\\bTRUE\\b|\\biMAX\\b|\\bV[0-9]+\\b|\\bNetFlix\\b|\\bNetflix\\b|\\bAmazon Prime\\b|\\bPrime Video\\b|\\bHotstar\\b|\\bDisney\\+? ?Hotstar\\b|\\bJioHotstar\\b|\\bJioCinema\\b|\\bJio\\b|\\bMX Player\\b|\\bSonyLiv\\b|\\bZee5\\b|\\bApple TV\\b|\\bHBO Max\\b|\\bHBO Original\\b|\\bHBO\\b)\\s*"; " "; "i")
+                | gsub("\\(\\s*\\)"; "")
+                | gsub("\\s*:\\s*$"; "")
+                | gsub("\\s*[–]\\s*"; " ")
+                | gsub("\\s+"; " ")
+                | gsub("\\s+$"; "")
+                | gsub("^[-–|]+|[-–|]+$"; "")
+                | rtrimstr(" -–|") | ltrimstr(" -–|")
+                | gsub("\\s+"; " ")
+                | gsub("\\s+$"; "")),
             type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
             year: (if (.post_title | test("\\((19|20)[0-9]{2}\\)")) then (.post_title | capture("\\((?<year>(19|20)[0-9]{2})\\)").year) else null end),
             rating: null,
