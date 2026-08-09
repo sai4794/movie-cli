@@ -185,8 +185,9 @@ _vm_resolve_vcloud() {
 import sys, base64
 s = sys.stdin.read().strip()
 try:
-    first = base64.b64decode(s)
-    second = base64.b64decode(first)
+    first = base64.b64decode(s + "=" * (-len(s) % 4))
+    p2 = first.decode().strip()
+    second = base64.b64decode(p2 + "=" * (-len(p2) % 4))
     print(second.decode())
 except Exception:
     sys.exit(1)
@@ -199,6 +200,52 @@ except Exception:
     tok_page=$(curl -sL --connect-timeout 6 --max-time 10 -A "$_VM_UA" "$decoded" 2>/dev/null) || return 1
     [[ -z "$tok_page" ]] && return 1
 
+    # CloudStream-parity: parse the `a.btn` button menu exactly like the CSX
+    # VCloud extractor does. The button text identifies the server:
+    #   "Download [FSLv2 Server]" / FSL Server / Mega / Download File → href
+    #     (these are R2/FSL direct links)
+    #   PixelServer → pixeldrain → the token page needs the api/file suffix
+    #   BuzzServer  → hx-redirect header dance
+    #   Server : 10Gbps → resolveFinalUrl, `link=` param decode
+    #   Telegram/bit.ly → decoys, skipped
+    local found
+    found=$(printf '%s' "$tok_page" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+out = []
+for m in re.finditer(r"<a[^>]*class=\"[^\"]*btn[^\"]*\"[^>]*>.*?</a>", html, re.S):
+    raw = m.group(0)
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    hrefm = re.search(r"href=\"([^\"]+)\"", raw)
+    if not hrefm:
+        continue
+    href = hrefm.group(1)
+    if "bit.ly" in href or "tg/go" in href or "telegram" in text:
+        continue  # ad/telegram decoys
+    if ("fsl" in text or "mega" in text or "download" in text or "10gbps" in text
+            or "pixel" in text or "buzz" in text):
+        out.append(href)
+seen = list(dict.fromkeys(out))
+for l in seen:
+    print(l)
+' 2>/dev/null || true)
+    if [[ -n "$found" ]]; then
+        # Normalize pixeldrain short-links to API download form (matches
+        # CSX: base + /api/file/<id>?download)
+        while IFS= read -r l; do
+            if [[ "$l" == *pixeldrain.dev/u/* ]]; then
+                local id
+                id=${l##*/}
+                printf '%s\n' "https://pixeldrain.dev/api/file/${id}?download"
+            else
+                printf '%s\n' "$l"
+            fi
+        done <<< "$found"
+        return 0
+    fi
+
+    # Fallback: raw string grep (older page shapes with inline links)
     printf '%s' "$tok_page" | grep -oE 'https?://[^"'"'"' <>]*' | grep -E 'r2\.cloudflarestorage|gpdl[0-9]*\.hubcloud|/video/|\.mkv|\.mp4' | sort -u 2>/dev/null || true
 }
 
@@ -225,8 +272,11 @@ _vm_resolve_nexdrive() {
     local link
     for link in "${links[@]}"; do
         case "$link" in
-            *vcloud.zip*|*fastdl.zip*)
+            *vcloud.zip*|*fastdl.zip*|*vcloud.fit*|*vcloud.org*|*vcloud.*|*hubcloud.fit*|*hubcloud.cx*)
                 (
+                    # V-Cloud pages: short-form vcloud.fit/<id> pages carry the
+                    # double-atob token chain; route ALL vcloud-family links
+                    # through the CSX-parity VCloud resolver.
                     _vm_resolve_vcloud "$link"
                 ) > "$tmp_dir/out_${idx}.txt" &
                 pids+=($!)
