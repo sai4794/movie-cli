@@ -351,10 +351,80 @@ plugin_get_url() {
     [[ -z "$html" ]] && die_plugin "Empty VegaMovies detail page"
 
     # nexdrive resolver links — the download buttons on the page.
-    # For series episodes "series:season:episode", keep only the links that
-    # belong to the requested season (nearest preceding "Season N" marker).
+    # For series episodes "series:season:episode", use the EPISODE's own
+    # link (the dgdrive URL from the episode-links page) instead of the
+    # season's batch links — resolving the batch gives the whole-season
+    # zip, not the requested episode.
     local nx_links
-    if [[ -n "$season" ]]; then
+    if [[ -n "$season" && -n "$episode" ]]; then
+        # fetch the episode-links page for this season, find episode N's url
+        local season_links
+        season_links=$(printf '%s' "$html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = sys.argv[1]
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", m.group(1)))
+for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+cur = "0"
+out = []
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    elif cur == want:
+        out.append(val)
+print("\n".join(dict.fromkeys(out)))
+' "$season" 2>/dev/null || true)
+        local link ep_html found=""
+        while IFS= read -r link; do
+            [[ -z "$link" ]] && continue
+            ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
+            [[ -z "$ep_html" ]] && continue
+            if printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+                found=$(printf '%s' "$ep_html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = sys.argv[1]
+labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
+links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(https://dgdrive\.pro/[^\"]+)\"", html)]
+for lpos, n in labels:
+    if n == int(want):
+        nxt = next((l for p2, l in links if p2 > lpos), None)
+        if nxt:
+            print(nxt)
+            break
+' "$episode" 2>/dev/null || true)
+                [[ -n "$found" ]] && break
+            fi
+        done <<< "$season_links"
+        if [[ -n "$found" ]]; then
+            nx_links="$found"
+        else
+            # episode page missing — fall back to the season's links
+            nx_links=$(printf '%s' "$html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = sys.argv[1]
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", m.group(1)))
+for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+cur = "0"
+out = []
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    elif cur == want:
+        out.append(val)
+print("\n".join(dict.fromkeys(out)))
+' "$season" 2>/dev/null || true)
+        fi
+    elif [[ -n "$season" ]]; then
         nx_links=$(printf '%s' "$html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
