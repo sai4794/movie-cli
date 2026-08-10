@@ -410,15 +410,14 @@ import sys, re
 html = sys.stdin.read()
 want = int(sys.argv[1])
 seen = set()
-for l in re.findall(r'https://m4ulinks\.(?:site|com)/number/\d+', html):
+for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
+    l, cls = m.group(1), m.group(2)
     if l in seen: continue
     seen.add(l)
-    lpos = html.find(l)
-    # skip btn-zip (BATCH/ZIP) links
-    before = html[max(0,lpos-300):lpos]
-    if 'btn-zip' in before or 'BATCH' in before.upper():
+    if 'btn-zip' in cls or 'BATCH' in cls.upper():
         continue
-    seasons = [(m.start(), int(m.group(1))) for m in re.finditer(r'Season\s*(\d+)', html, re.I)]
+    lpos = html.find(l)
+    seasons = [(s.start(), int(s.group(1))) for s in re.finditer(r'Season\s*(\d+)', html, re.I)]
     cur = 1
     for spos, snum in seasons:
         if spos < lpos: cur = snum
@@ -432,12 +431,11 @@ for l in re.findall(r'https://m4ulinks\.(?:site|com)/number/\d+', html):
 import sys, re
 html = sys.stdin.read()
 seen = set()
-for l in re.findall(r'https://m4ulinks\.(?:site|com)/number/\d+', html):
+for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
+    l, cls = m.group(1), m.group(2)
     if l in seen: continue
     seen.add(l)
-    lpos = html.find(l)
-    before = html[max(0,lpos-300):lpos]
-    if 'btn-zip' in before or 'BATCH' in before.upper():
+    if 'btn-zip' in cls or 'BATCH' in cls.upper():
         continue
     print(l)
 " 2>/dev/null || true)
