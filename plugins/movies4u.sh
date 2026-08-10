@@ -398,8 +398,50 @@ plugin_get_url() {
     [[ -z "$html" ]] && die_plugin "Empty Movies4u detail page"
 
     # m4ulinks numbers on the post page
+    # BUG FIX: must position-walk season headings and assign each m4ulinks
+    # number to its nearest preceding "Season N" heading. Without this,
+    # episode 1 gets resolved from ALL seasons' m4ulinks pages (S1-S5),
+    # mixing S1E1 with S2E1, S3E1, etc. Also filter out btn-zip (BATCH/ZIP)
+    # links which are zip packs, not per-episode download pages.
     local num_links
-    num_links=$(printf '%s' "$html" | grep -oE 'https://m4ulinks\.(site|com)/number/[0-9]+' | sort -u 2>/dev/null || true)
+    if [[ -n "$season" ]]; then
+        num_links=$(printf '%s' "$html" | python3 -c "
+import sys, re
+html = sys.stdin.read()
+want = int(sys.argv[1])
+seen = set()
+for l in re.findall(r'https://m4ulinks\.(?:site|com)/number/\d+', html):
+    if l in seen: continue
+    seen.add(l)
+    lpos = html.find(l)
+    # skip btn-zip (BATCH/ZIP) links
+    before = html[max(0,lpos-300):lpos]
+    if 'btn-zip' in before or 'BATCH' in before.upper():
+        continue
+    seasons = [(m.start(), int(m.group(1))) for m in re.finditer(r'Season\s*(\d+)', html, re.I)]
+    cur = 1
+    for spos, snum in seasons:
+        if spos < lpos: cur = snum
+        else: break
+    if cur == want:
+        print(l)
+" "$season" 2>/dev/null || true)
+    else
+        # movie: all non-zip m4ulinks links
+        num_links=$(printf '%s' "$html" | python3 -c "
+import sys, re
+html = sys.stdin.read()
+seen = set()
+for l in re.findall(r'https://m4ulinks\.(?:site|com)/number/\d+', html):
+    if l in seen: continue
+    seen.add(l)
+    lpos = html.find(l)
+    before = html[max(0,lpos-300):lpos]
+    if 'btn-zip' in before or 'BATCH' in before.upper():
+        continue
+    print(l)
+" 2>/dev/null || true)
+    fi
     [[ -z "$num_links" ]] && die_plugin "No m4ulinks pages on Movies4u page for: $id"
 
     local tmp_dir
