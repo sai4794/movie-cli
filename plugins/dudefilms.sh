@@ -337,7 +337,8 @@ plugin_search() {
     # normalized title matches ALL significant query tokens (single shared
     # token is too loose: "all of us are dead" would match any title
     # containing "dead"), or contains the full normalized query.
-    printf '%s' "$html" | python3 -c '
+    local wp_results
+    wp_results=$(printf '%s' "$html" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
 query = sys.argv[1].lower()
@@ -397,7 +398,7 @@ for o in out:
         seen.add(o["id"])
         dedup.append(o)
 print(__import__("json").dumps(dedup))
-' "$query" 2>/dev/null || printf '[]'
+' "$query" 2>/dev/null || printf '[]')
 }
 
 plugin_get_url() {

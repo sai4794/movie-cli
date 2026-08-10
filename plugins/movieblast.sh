@@ -171,14 +171,56 @@ plugin_search() {
     response=$(_mb_api "/api/search/${encoded_query}")
 
     # Transform to standard schema
-    printf '%s' "$response" | jq -c '.search[]? | {
+    local wp_results
+    wp_results=$(printf '%s' "$response" | jq -c '.search[]? | {
         id: (.id | tostring),
         title: (if .release_date then "\(.name) (\(.release_date[:4]))" else .name end),
         type: (if .type == "serie" then "series" else .type end),
         year: (.release_date // null | if . then .[:4] else null end),
         rating: (.vote_average // null | if . then (. | tostring) else null end),
         poster: (.poster_path // null)
-    }' 2>/dev/null | jq -s '.'
+    }' 2>/dev/null | jq -s '.' 2>/dev/null || printf '[]')
+
+    # Cinemeta fallback: when API search returns sparse results
+    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
+    set +euo pipefail
+    local cm_count
+    cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$cm_count" -lt 2 ]]; then
+        local cm_all cm_tmp cm_rows
+        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
+        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
+            cm_tmp=$(mktemp)
+            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
+            while IFS= read -r meta; do
+                [[ -z "$meta" ]] && continue
+                local cname cyear ctype enc_resp mb_resp
+                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
+                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
+                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
+                [[ -z "$cname" ]] && continue
+                enc_resp=$(_mb_api "/api/search/$(urlencode "${cname} ${cyear}")" 2>/dev/null || true)
+                [[ -z "$enc_resp" ]] && continue
+                printf '%s' "$enc_resp" | jq -c ".search[]? | {
+                    id: (.id | tostring),
+                    title: (if .release_date then \"\(.name) (\(.release_date[:4]))\" else .name end),
+                    type: (if .type == \"serie\" then \"series\" else .type end),
+                    year: (.release_date // null | if . then .[:4] else null end),
+                    rating: (.vote_average // null | if . then (. | tostring) else null end),
+                    poster: (.poster_path // null)
+                }" 2>/dev/null | while IFS= read -r j; do
+                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
+                done
+            done <<< "$cm_rows"
+            if [[ -s "$cm_tmp" ]]; then
+                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
+                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
+                    || printf '%s' "$wp_results")
+            fi
+            rm -f "$cm_tmp"
+        fi
+    fi
+    printf '%s' "$wp_results"
 }
 
 plugin_get_url() {

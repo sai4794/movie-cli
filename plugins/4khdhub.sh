@@ -285,7 +285,8 @@ plugin_search() {
     [[ -z "$html" ]] && return 1
 
     # Parse movie cards: <a href="/slug/" class="movie-card" ...> ... <div class="movie-card-title">TITLE</div>
-    printf '%s' "$html" | python3 -c '
+    local wp_results
+    wp_results=$(printf '%s' "$html" | python3 -c '
 import sys, re, json
 html = sys.stdin.read()
 out = []
@@ -298,7 +299,54 @@ for m in re.finditer(r"<a href=\"(/[^\"]+)\"[^>]*class=\"movie-card\"[^>]*>(.*?)
     typ = "series" if "-series-" in slug else "movie"
     out.append({"id": slug.strip("/"), "title": title, "type": typ})
 print(json.dumps(out))
-' 2>/dev/null
+' 2>/dev/null || printf '[]')
+
+    # Cinemeta fallback: when WP site search returns sparse results
+    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
+    set +euo pipefail
+    local wp_count
+    wp_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$wp_count" -lt 2 ]]; then
+        local cm_all cm_tmp cm_rows
+        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
+        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
+            cm_tmp=$(mktemp)
+            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
+            while IFS= read -r meta; do
+                [[ -z "$meta" ]] && continue
+                local cname cyear ctype site_html
+                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
+                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
+                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
+                [[ -z "$cname" ]] && continue
+                site_html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/?s=$(urlencode "${cname} ${cyear}")" 2>/dev/null || true)
+                [[ -z "$site_html" ]] && continue
+                printf '%s' "$site_html" | python3 -c '
+import sys, re, json
+html = sys.stdin.read()
+ctitle = sys.argv[1]
+ctnorm = re.sub(r"[^a-z0-9]", "", ctitle.lower())
+for m in re.finditer(r"<a href=\"(/[^\" ]+)\"[^>]*class=\"movie-card\"[^>]*>(.*?)</a>", html, re.S):
+    slug, inner = m.group(1), m.group(2)
+    title_m = re.search(r"movie-card-title[^>]*>([^<]+)", inner)
+    if not title_m: continue
+    title = title_m.group(1).strip()
+    tnorm = re.sub(r"[^a-z0-9]", "", title.lower())
+    if ctnorm in tnorm or tnorm in ctnorm:
+        typ = "series" if "-series-" in slug else "movie"
+        print(json.dumps({"id": slug.strip("/"), "title": title, "type": typ, "year": sys.argv[2]}))
+' "$cname" "$cyear" 2>/dev/null | while IFS= read -r j; do
+                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
+                done
+            done <<< "$cm_rows"
+            if [[ -s "$cm_tmp" ]]; then
+                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
+                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null || printf '%s' "$wp_results")
+            fi
+            rm -f "$cm_tmp"
+        fi
+    fi
+    printf '%s' "$wp_results"
 }
 
 plugin_get_url() {

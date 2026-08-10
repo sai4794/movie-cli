@@ -304,7 +304,8 @@ plugin_search() {
         --data-urlencode "page=1" 2>/dev/null) || return 1
     [[ -z "$response" ]] && return 1
 
-    printf '%s' "$response" | jq -c '
+    local wp_results
+    wp_results=$(printf '%s' "$response" | jq -c '
         [.hits[]?.document |
         {
             id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
@@ -313,7 +314,7 @@ plugin_search() {
                 | gsub("\\[[^\\]]*\\]"; " ")
                 | gsub("\\{[^}]*\\}"; " ")
                 | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "")
-                | gsub("\\s*(?:\\bDual Audio\\b|\\bMulti Audio\\b|\\bWEB-? ?DL\\b|\\bWEBRip\\b|\\bBluRay\\b|\\bHDTS\\b|\\bHDTC\\b|\\bHDCAM\\b|\\bCAMRip\\b|\\bPREHD\\b|\\bx264\\b|\\bx265\\b|\\b10Bit\\b|\\bHEVC\\b|\\bESubs?\\b|\\bFull Movie\\b|\\bWeb Series\\b|\\bWEBSeries\\b|\\bAnime Series\\b|\\bSeries\\b|\\bHindi Dubbed\\b|\\bHindi\\b|\\bEnglish\\b|\\bTelugu\\b|\\bTamil\\b|\\bKannada\\b|\\bMalayalam\\b|\\bPunjabi\\b|\\bDubbed\\b|\\bORG\\b|\\bMovie\\b|\\bHQ\\b|\\bHD\\b|\\bNF\\b|\\bLiNE\\b|\\bDS\\b|\\bUNCUT\\b|\\bTRUE\\b|\\biMAX\\b|\\bV[0-9]+\\b|\\bNetFlix\\b|\\bNetflix\\b|\\bAmazon Prime\\b|\\bPrime Video\\b|\\bHotstar\\b|\\bDisney\\+? ?Hotstar\\b|\\bJioHotstar\\b|\\bJioCinema\\b|\\bJio\\b|\\bMX Player\\b|\\bSonyLiv\\b|\\bZee5\\b|\\bApple TV\\b|\\bHBO Max\\b|\\bHBO Original\\b|\\bHBO\\b)\\s*"; " "; "i")
+                | gsub("\\s*(?:\\bDual Audio\\b|\\bMulti Audio\\b|\\bWEB-? ?DL\\b|\\bWEBRip\\b|\\bBluRay\\b|\\bHDTS\\b|\\bHDTC\\b|\\bHDCAM\\b|\\bCAMRip\\b|\\bPREHD\\b|\\bx264\\b|\\bx265\\b|\\b10Bit\\b|\\bHEVC\\b|\\bESub[s]?\\b|\\bFull Movie\\b|\\bWeb Series\\b|\\bWEBSeries\\b|\\bAnime Series\\b|\\bSeries\\b|\\bHindi Dubbed\\b|\\bHindi\\b|\\bEnglish\\b|\\bTelugu\\b|\\bTamil\\b|\\bKannada\\b|\\bMalayalam\\b|\\bPunjabi\\b|\\bDubbed\\b|\\bORG\\b|\\bMovie\\b|\\bHQ\\b|\\bHD\\b|\\bNF\\b|\\bLiNE\\b|\\bDS\\b|\\bUNCUT\\b|\\bTRUE\\b|\\biMAX\\b|\\bV[0-9]+\\b|\\bNetFlix\\b|\\bNetflix\\b|\\bAmazon Prime\\b|\\bPrime Video\\b|\\bHotstar\\b|\\bDisney\\+? ?Hotstar\\b|\\bJioHotstar\\b|\\bJioCinema\\b|\\bJio\\b|\\bMX Player\\b|\\bSonyLiv\\b|\\bZee5\\b|\\bApple TV\\b|\\bHBO Max\\b|\\bHBO Original\\b|\\bHBO\\b)\\s*"; " "; "i")
                 | gsub("\\(\\s*\\)"; "")
                 | gsub("\\s*:\\s*$"; "")
                 | gsub("\\s*[–]\\s*"; " ")
@@ -328,7 +329,55 @@ plugin_search() {
             rating: null,
             poster: .post_thumbnail
         }]
-    ' 2>/dev/null
+    ' 2>/dev/null || printf '[]')
+
+    # Cinemeta fallback: when Typesense search returns sparse results
+    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
+    set +euo pipefail
+    local cm_count
+    cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$cm_count" -lt 2 ]]; then
+        local cm_all cm_tmp cm_rows
+        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
+        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
+            cm_tmp=$(mktemp)
+            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
+            while IFS= read -r meta; do
+                [[ -z "$meta" ]] && continue
+                local cname cyear ctype search_resp
+                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
+                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
+                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
+                [[ -z "$cname" ]] && continue
+                search_resp=$(curl -s --connect-timeout 8 --max-time 25 \
+                    -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/" -G "$_H4U_SEARCH" \
+                    --data-urlencode "q=${cname} ${cyear}" \
+                    --data-urlencode "query_by=post_title,category,stars,director,imdb_id" \
+                    --data-urlencode "sort_by=sort_by_date:desc" \
+                    --data-urlencode "limit=5" 2>/dev/null || true)
+                [[ -z "$search_resp" ]] && continue
+                printf '%s' "$search_resp" | jq -c '
+                    [.hits[]?.document | {
+                        id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
+                        title: (.post_title | sub("^Download "; "") | gsub("\\[[^\\]]*\\]"; " ") | gsub("\\{[^}]*\\}"; " ") | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "") | gsub("\\s+"; " ") | gsub("\\s+$"; "")),
+                        type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
+                        year: .year,
+                        rating: null,
+                        poster: .post_thumbnail
+                    }]
+                ' 2>/dev/null | while IFS= read -r j; do
+                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
+                done
+            done <<< "$cm_rows"
+            if [[ -s "$cm_tmp" ]]; then
+                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
+                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
+                    || printf '%s' "$wp_results")
+            fi
+            rm -f "$cm_tmp"
+        fi
+    fi
+    printf '%s' "$wp_results"
 }
 
 plugin_get_url() {
