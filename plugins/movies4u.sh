@@ -134,9 +134,14 @@ _m4u_quality() {
 
 _m4u_stream_json() {
     local url="$1"
+    local referer="${2:-}"
     local qual
     qual=$(_m4u_quality "$url")
-    jq -nc --arg u "$url" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "movies4u"}'
+    if [[ -n "$referer" ]]; then
+        jq -nc --arg u "$url" --arg q "$qual" --arg r "$referer" '{quality: $q, url: $u, size: "unknown", provider: "movies4u", referer: $r}'
+    else
+        jq -nc --arg u "$url" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "movies4u"}'
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -485,7 +490,12 @@ for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d
                         pd_id="${su##*/}"
                         [[ -n "$pd_id" ]] && su="${pd_base}/api/file/${pd_id}?download"
                     fi
-                    _m4u_stream_json "$su"
+                    # workers.dev hotlink-check needs Referer from sportverse.cc
+                    if [[ "$su" == *"workers.dev"* ]]; then
+                        _m4u_stream_json "$su" "https://sportverse.cc/"
+                    else
+                        _m4u_stream_json "$su"
+                    fi
                 done > "$tmp_dir/out_${idx}.json"
             fi
         ) &
