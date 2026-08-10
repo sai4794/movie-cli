@@ -331,7 +331,8 @@ plugin_search() {
     html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    printf '%s' "$html" | python3 -c '
+    local wp_results
+    wp_results=$(printf '%s' "$html" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
 query = sys.argv[1].lower()
@@ -380,7 +381,79 @@ for o in out:
         seen.add(o["id"])
         dedup.append(o)
 print(__import__("json").dumps(dedup))
-' "$query" 2>/dev/null || printf '[]'
+' "$query" 2>/dev/null || printf '[]')
+
+    # Cinemeta fallback: when WP site search returns sparse results,
+    # query Cinemeta for fuzzy title matches and search the site by
+    # Cinemeta title+year (matches CSX CineStream Movies4u behavior).
+    # set +euo pipefail is scoped to this function's subshell context.
+    set +euo pipefail
+    local cm_count
+    cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$cm_count" -lt 2 ]]; then
+        local cm_movie cm_series cm_all
+        cm_movie=$(curl -s --connect-timeout 6 --max-time 15 \
+            "https://v3-cinemeta.strem.io/catalog/movie/top/search=$(urlencode "$query").json" 2>/dev/null || true)
+        cm_series=$(curl -s --connect-timeout 6 --max-time 15 \
+            "https://v3-cinemeta.strem.io/catalog/series/top/search=$(urlencode "$query").json" 2>/dev/null || true)
+        cm_all=$(printf '%s\n%s' "$cm_movie" "$cm_series" | jq -s \
+            '[.[]?.metas[]? | {name, releaseInfo, type}] | .[0:3]' 2>/dev/null || true)
+        if [[ -n "$cm_all" && "$cm_all" != "null" && "$cm_all" != "[]" ]]; then
+            local cm_tmp cm_rows
+            cm_tmp=$(mktemp)
+            # Do NOT init with echo "[]" — start empty to avoid jq merging [] as string
+            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
+            while IFS= read -r meta; do
+                [[ -z "$meta" ]] && continue
+                local cname cyear ctype
+                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
+                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
+                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
+                [[ -z "$cname" ]] && continue
+                local site_html
+                site_html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" \
+                    --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
+                [[ -z "$site_html" ]] && continue
+                printf '%s' "$site_html" | python3 -c "
+import sys, re, html as h, json
+page = sys.stdin.read()
+ctitle, cyear, ctype = sys.argv[1], sys.argv[2], sys.argv[3]
+ctnorm = re.sub(r'[^a-z0-9]', '', ctitle.lower())
+for m in re.finditer(r'<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,150})</a>', page):
+    url, title = m.group(1), h.unescape(m.group(2)).strip()
+    if any(x in url for x in ('/tag/','/category/','/page/','/author/','feed','#','?s=','wp-content')): continue
+    tnorm = re.sub(r'[^a-z0-9]', '', title.lower())
+    if ctnorm in tnorm or tnorm in ctnorm:
+        slug = url.rstrip('/').rsplit('/',1)[-1]
+        ym = re.search(r'\((\d{4})\)|(19|20)\d{2}', title)
+        year = (ym.group(1) or ym.group(0)) if ym else ''
+        ct = re.sub(r'^Download\s+','',title,flags=re.I)
+        ct = re.sub(r'\[[^\]]*\]',' ',ct)
+        ct = re.sub(r'\{[^}]*\}',' ',ct)
+        ct = re.sub(r'\s*(4K|[0-9]+p)\s*.*$','',ct,flags=re.I)
+        ct = re.sub(r'\s+',' ',ct).strip(' -|\u2013')
+        print(json.dumps({'id':slug,'title':ct,'type':ctype,'year':year or cyear,'rating':None,'poster':None}))
+" "$cname" "$cyear" "$ctype" 2>/dev/null | while IFS= read -r j; do
+                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
+                done
+            done <<< "$cm_rows"
+            # Merge: wp_results is JSON array, tmp has line-delimited JSON objects
+            local cm_merged
+            if [[ -s "$cm_tmp" ]]; then
+                cm_merged=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
+                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
+                    || printf '%s' "$wp_results")
+            else
+                cm_merged="$wp_results"
+            fi
+            rm -f "$cm_tmp"
+            printf '%s' "$cm_merged"
+        else
+            printf '%s' "$wp_results"
+        fi
+    else
+        printf '%s' "$wp_results"
+    fi
 }
 
 plugin_get_url() {
