@@ -115,20 +115,23 @@ verify_streams() {
     local total
     total=$(printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0)
 
-    # Extract all URLs in a single jq call (avoids N subprocess spawns)
+    # Extract URLs + optional per-stream referers in a single jq call
     local tmp_verify
     tmp_verify=$(mktemp -d)
-    printf '%s' "$json" | jq -r 'to_entries[] | "\(.key)\t\(.value.url // "")"' \
+    printf '%s' "$json" | jq -r 'to_entries[] | "\(.key)\t\(.value.url // "")\t\(.value.referer // "")"' \
         2>/dev/null > "$tmp_verify/urls.tsv"
 
     # ponytail: verify all streams in parallel — -L follows redirects like mpv
-    # Referer bypasses CDN 403 on Vidlink URLs
+    # Referer bypasses CDN 403 on Vidlink URLs and per-stream referer fields
+    # (e.g. hubcloud resolver chains where workers.dev CDNs hotlink-check)
     local pids=()
-    while IFS=$'\t' read -r idx url; do
+    while IFS=$'\t' read -r idx url referer; do
         [[ -z "$url" ]] && continue
         (
             local referer_arg=()
-            if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
+            if [[ -n "$referer" && "$referer" != "null" ]]; then
+                referer_arg=(-H "Referer: $referer")
+            elif [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
                 referer_arg=(-H "Referer: https://vidlink.pro/")
             fi
             local http_code hex
@@ -243,27 +246,32 @@ play_with_fallback() {
         # Build play order: selected URL first (attempt 0 only), then the rest
         # in given order. On re-resolve (attempt 1) the selected URL is already
         # known dead — don't re-prepend it.
+        # Each entry is "url\t<referer>" so playback can honor per-stream
+        # referers (hubcloud-chain workers.dev CDNs hotlink-check).
         local play_order=()
         local i=0 seen_selected=0
         local count
         count=$(printf '%s' "$streams_json" | jq 'length' 2>/dev/null || echo 0)
         while (( i < count )); do
-            local u
+            local u r
             u=$(printf '%s' "$streams_json" | jq -r ".[$i].url // empty" 2>/dev/null || true)
+            r=$(printf '%s' "$streams_json" | jq -r ".[$i].referer // empty" 2>/dev/null || true)
             if [[ "$attempt" == "0" && -n "$selected_url" && "$u" == "$selected_url" && "$seen_selected" == "0" ]]; then
-                play_order=("$selected_url" "${play_order[@]}")
+                play_order=("$selected_url	$r" "${play_order[@]}")
                 seen_selected=1
             else
-                [[ -n "$u" ]] && play_order+=("$u")
+                [[ -n "$u" ]] && play_order+=("$u	$r")
             fi
             i=$((i + 1))
         done
         if [[ "$attempt" == "0" && "$seen_selected" == "0" && -n "$selected_url" ]]; then
-            play_order=("$selected_url" "${play_order[@]}")
+            play_order=("$selected_url	" "${play_order[@]}")
         fi
 
         local played=0 first=1
-        for url in "${play_order[@]}"; do
+        for entry in "${play_order[@]}"; do
+            local url="${entry%%	*}"
+            local stream_referer="${entry#*	}"
             if (( first == 0 )); then
                 ui_info "Previous stream failed — trying next mirror..."
             fi
@@ -275,7 +283,7 @@ play_with_fallback() {
             status_msg "Playing: $label"
             local saved_no_detach="$NO_DETACH"
             NO_DETACH=1
-            play_video "$url" "$start_time" || rc=$?
+            play_video "$url" "$start_time" "$stream_referer" || rc=$?
             NO_DETACH="$saved_no_detach"
 
             # 0 = user quit/finished, 130 = SIGINT — both are "played enough"

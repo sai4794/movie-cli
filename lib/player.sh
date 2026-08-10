@@ -107,6 +107,7 @@ _android_launch() {
 play_video() {
     local url="$1"
     local start_time="${2:-}"
+    local stream_referer="${3:-}"
     local player="${PLAYER:-mpv}"
 
     # ponytail: URL-encode addon URLs with unencoded spaces/brackets
