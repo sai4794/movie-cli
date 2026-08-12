@@ -67,10 +67,11 @@ setup() {
     run plugin_get_url "$movie_id" 720
     assert_success
     local raw="$output"
-    # Output is a single JSON object, not array
-    echo "$raw" | jq -e '.url' >/dev/null
+    # Output is an array of stream objects (parallel language/res merge);
+    # recurse to find a stream whatever the shape
+    echo "$raw" | jq -e '.. | objects | select(has("url")) | .url' >/dev/null
     local url
-    url=$(echo "$raw" | jq -r '.url')
+    url=$(echo "$raw" | jq -r '.. | objects | .url? // empty' | head -1)
     [[ "$url" == *"m3u8"* ]]
 }
 
@@ -83,6 +84,14 @@ setup() {
     assert_success
     local raw="$output"
     [[ $(echo "$raw" | jq 'length') -ge 2 ]]
+    # CLI contract: seasons need .title, .id, .number (not just name/season)
+    echo "$raw" | jq -e '.[0].title' >/dev/null
+    echo "$raw" | jq -e '.[0].number' >/dev/null
+    echo "$raw" | jq -e '.[0].id' >/dev/null
+    # Season numbers must be explicit (1, 2, ...), not array order
+    local first
+    first=$(echo "$raw" | jq -r '.[0].season')
+    [[ "$first" =~ ^[0-9]+$ ]]
 }
 
 @test "CastleTv series episodes are extracted per season" {
@@ -94,6 +103,13 @@ setup() {
     local raw="$output"
     [[ $(echo "$raw" | jq 'length') -ge 5 ]]
     echo "$raw" | jq -e '.[0].name' >/dev/null
+    # CLI contract: episodes need .title, .episode, .season
+    echo "$raw" | jq -e '.[0].title' >/dev/null
+    echo "$raw" | jq -e '.[0].episode' >/dev/null
+    echo "$raw" | jq -e '.[0].season' >/dev/null
+    # Episode id must be composite "movieId:season:episode" so get_url
+    # can resolve movieId + episodeId in one shot
+    echo "$raw" | jq -e '.[0].id | test("^[0-9]+:[0-9]+:[0-9]+$")' >/dev/null
 }
 
 @test "CastleTv series get_url resolves a specific episode" {
@@ -103,8 +119,8 @@ setup() {
     run plugin_get_url "${series_id}:1:1" 720
     assert_success
     local raw="$output"
-    echo "$raw" | jq -e '.url' >/dev/null
+    echo "$raw" | jq -e '.. | objects | select(has("url")) | .url' >/dev/null
     local url
-    url=$(echo "$raw" | jq -r '.url')
+    url=$(echo "$raw" | jq -r '.. | objects | .url? // empty' | head -1)
     [[ "$url" == *"m3u8"* ]]
 }
