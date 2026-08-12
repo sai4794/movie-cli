@@ -111,7 +111,8 @@ plugin_search() {
             type: (if .movieType == 1 then "series" else "movie" end),
             year: (.year // null | tostring),
             rating: (.score // null | tostring),
-            poster: .coverHorizontalImage
+            poster: (.coverHorizontalImage // null),
+            plugin: "CastleTv"
         }]
     ' 2>/dev/null
 }
