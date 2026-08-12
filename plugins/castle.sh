@@ -104,16 +104,35 @@ plugin_search() {
     local result
     result=$(_ct_api_get "${_CT_BASE}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encoded}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=20")
     [[ -z "$result" ]] && return 1
-    printf '%s' "$result" | jq -c '
-        [.data.rows[]? | {
-            id: (.id | tostring),
+
+    # Relevance filter (canonical, same rule as dudefilms/vegamovies):
+    #   keep iff (a) normalized query is a substring of normalized title,
+    #   OR (b) EVERY significant token (>=3 chars) appears as a whole word.
+    # Castle's searchByKeyword is fuzzy — without this, "all of us are dead"
+    # dumps 20 unrelated movies/series (Dead of Winter, The Last of Us, ...).
+    local qnorm qtokens
+    qnorm=$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+    qtokens=$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]' | grep -oE '[a-z0-9]{3,}' | tr '\n' ' ' | sed 's/ $//')
+    [[ -z "$qtokens" ]] && qtokens="$qnorm"
+
+    printf '%s' "$result" | jq -c --arg qnorm "$qnorm" --arg qtokens "$qtokens" '
+        def norm: ascii_downcase | gsub("[^a-z0-9]"; "");
+        def twords: ascii_downcase | gsub("[^a-z0-9]+"; " ") | split(" ");
+        def keeps:
+            ($qnorm != "" and (norm | contains($qnorm)))
+            or
+            ((twords) as $tw
+             | all(($qtokens | split(" "))[];
+                   . as $t | ($t != "" and ($tw | index($t)) != null)));
+        [.data.rows[]?
+         | select((.title // "") | keeps)
+         | {id: (.id | tostring),
             title: .title,
             type: (if .movieType == 1 then "series" else "movie" end),
             year: (.year // null | tostring),
             rating: (.score // null | tostring),
             poster: (.coverHorizontalImage // null),
-            plugin: "CastleTv"
-        }]
+            plugin: "CastleTv"}]
     ' 2>/dev/null
 }
 

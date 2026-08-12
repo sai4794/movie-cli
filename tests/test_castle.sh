@@ -56,8 +56,25 @@ setup() {
 
 @test "CastleTv search returns empty for nonsense query" {
     run plugin_search "zzqxqj-nonsense-xyz"
-    # Castle API may return related results; just verify no crash
     assert_success
+    local raw="$output"
+    # Relevance filter guarantees [] — castle fuzzy search would otherwise
+    # return whatever partial matches it can find
+    [[ $(echo "$raw" | jq 'length') -eq 0 ]]
+}
+
+@test "CastleTv search filters fuzzy noise rows" {
+    run plugin_search "all of us are dead"
+    assert_success
+    local raw="$output"
+    # Exact series first; at most the movie that shares all query words
+    local count first
+    count=$(echo "$raw" | jq 'length')
+    [[ $count -le 2 ]]
+    first=$(echo "$raw" | jq -r '.[0].title')
+    [[ "$first" == "All of Us Are Dead" ]]
+    # no single-token leaks (Dead of Winter, The Last of Us, Army of the Dead...)
+    echo "$raw" | jq -e '[.[] | select(.title | test("Dead of Winter|The Last of Us|Army of the Dead"; "i"))] | length == 0' >/dev/null
 }
 
 @test "CastleTv get_url returns playable stream candidates for a movie" {
