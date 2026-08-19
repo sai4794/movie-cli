@@ -15,6 +15,8 @@ All notable changes to movie-cli will be documented in this file.
 - **movieblast get_url on missing sources** — `qualities_json` was unset when a media item had neither `.seasons` nor `.videos`, hitting a `set -u` unbound-variable abort instead of the clean "No video sources" die.
 - **history progress update could abort playback** — `history_update_progress` returns 1 when jq fails on a corrupt history line, and the three call sites under `set -e` let that kill the CLI *after* playback succeeded. Call sites now tolerate failure.
 - **confirm() hang without a tty** — `read </dev/tty` blocked forever in piped/scripted runs (e.g. `-D` in CI). Declines immediately when no tty.
+- **dudefilms search returned nothing since 9a21514** — the Cinemeta-fallback commit wrapped the parser's direct-print pipeline in a variable but never added the trailing `printf`, and never added the fallback block it claimed; every dudefilms search was silently empty. Parser extracted to `_df_parse_search_page`, print restored, fallback implemented to match 4khdhub. (Only dudefilms was affected — hdhub4u/movieblast/4khdhub all print correctly.)
+- **dudefilms episode extraction SIGPIPE** — `_df_resolve_archive_episode` ran page-sized archive content through `grep | head -1`; multi-mirror pages (several blocks per episode label) SIGPIPEd grep under pipefail → intermittent misses. Consume-then-slice with `awk NR==1`.
 - **update.sh release-mode rm guard** — `${share_dir:?}` on the `rm -rf` swap, matching install.sh's convention (SC2115).
 
 ### Added
