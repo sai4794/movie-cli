@@ -75,7 +75,16 @@ debug() {
 retry() {
     local max="${1:-3}"
     local delay="${2:-2}"
-    shift 2
+    # Guard: both leading args must be numeric. `retry 3 mycmd` used to
+    # shift the command away and "succeed" without running anything (the
+    # empty "$@" is a no-op returning 0) — a silent no-op footgun.
+    if [[ ! "$max" =~ ^[0-9]+$ || ! "$delay" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        warn "retry: bad arguments (expected: retry [max delay] command...; got: $*)"
+        return 1
+    fi
+    shift 2 || return 1
+    # A trailing empty command is still a silent no-op — reject it.
+    [[ $# -gt 0 ]] || { warn "retry: no command given"; return 1; }
 
     # Ensure delay is integer for arithmetic
     delay=${delay%.*}

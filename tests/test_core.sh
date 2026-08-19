@@ -136,6 +136,21 @@ load 'setup'
     assert_failure
 }
 
+@test "retry rejects non-numeric max/delay (no silent no-op)" {
+    # Regression: `retry 3 mycmd` shifted the command away and "succeeded"
+    # without running anything (empty "$@" is a no-op returning 0).
+    # NOTE: warn is silenced by QUIET=1 in the harness — assert on status.
+    QUIET=0 run retry 3 notanumber true
+    assert_failure
+    [[ "$output" == *"bad arguments"* ]]
+}
+
+@test "retry with no command returns 1" {
+    QUIET=0 run retry 3 1
+    assert_failure
+    [[ "$output" == *"no command"* ]]
+}
+
 @test "retry retries then succeeds" {
     _retry_count=0
     flaky() { _retry_count=$((_retry_count + 1)); [[ $_retry_count -ge 2 ]]; }
