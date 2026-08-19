@@ -509,9 +509,13 @@ labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]
 families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
 for lpos, n in labels:
     if n == want:
+        # bound to THIS block: link must sit between this label and the
+        # next — otherwise a block missing the preferred family grabs the
+        # next episode link (same fix as plugin_list_episodes).
+        nxt_label = next((p for p, _ in labels if p > lpos), len(html))
         for fam in families:
             links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
-            nxt = next((l for p2, l in links if p2 > lpos), None)
+            nxt = next((l for p2, l in links if lpos < p2 < nxt_label), None)
             if nxt:
                 print(nxt)
                 break

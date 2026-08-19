@@ -129,6 +129,34 @@ Season 1 <a href="https://nexdrive.fit/genxfm1/">links</a>
     assert_success
 }
 
+@test "VegaMovies get_url episode pick does not leak the next block's link" {
+    # Regression (get_url twin): requesting E1 whose block only has dgdrive
+    # (ad-gated, rejected) must NOT return E2's vcloud stream — the old
+    # unbounded scan paired E1 with the next preferred-family link.
+    local SERIES='<html><body>
+Season 1 <a href="https://nexdrive.fit/genxfm1/">links</a>
+</body></html>'
+    local EP_PAGE='<html><body>
+-:Episodes: 1:- <a href="https://dgdrive.pro/FILE1">
+-:Episodes: 2:- <a href="https://vcloud.fit/j2">
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *nexdrive*) printf '%s' "$EP_PAGE" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' "$SERIES" ;;
+        esac
+    }
+    _vm_resolve_vcloud() { printf '%s\n' "$1"; }
+    _vm_resolve_dgdrive() { printf '%s\n' "$1"; }
+
+    run plugin_get_url "series-slug:1:1" 720
+    assert_failure
+    [[ "$output" != *"vcloud.fit/j2"* ]]
+    [[ "$output" == *"No playable links resolved"* ]]
+}
+
 @test "VegaMovies health succeeds" {
     run plugin_health
     [ "$status" -eq 0 ]
