@@ -328,21 +328,24 @@ _vm_resolve_nexdrive() {
     local link
     for link in "${links[@]}"; do
         case "$link" in
+            *gpdl*.hubcloud.cx*)
+                # pixel-class redirector → follow to the real link
+                # NOTE: must be checked BEFORE the hubcloud.cx V-Cloud family
+                # below — *hubcloud.cx* would swallow gpdl2.hubcloud.cx links
+                # into the VCloud resolver (SC2221/SC2222).
+                (
+                    local final
+                    final=$(curl -sL --connect-timeout 6 --max-time 10 -A "$_VM_UA" -o /dev/null -w '%{url_effective}' "$link" 2>/dev/null || true)
+                    [[ -n "$final" ]] && printf '%s\n' "$final"
+                ) > "$tmp_dir/out_${idx}.txt" &
+                pids+=($!)
+                ;;
             *vcloud.zip*|*fastdl.zip*|*vcloud.fit*|*vcloud.org*|*vcloud.*|*hubcloud.fit*|*hubcloud.cx*)
                 (
                     # V-Cloud pages: short-form vcloud.fit/<id> pages carry the
                     # double-atob token chain; route ALL vcloud-family links
                     # through the CSX-parity VCloud resolver.
                     _vm_resolve_vcloud "$link"
-                ) > "$tmp_dir/out_${idx}.txt" &
-                pids+=($!)
-                ;;
-            *gpdl*.hubcloud.cx*)
-                # pixel-class redirector → follow to the real link
-                (
-                    local final
-                    final=$(curl -sL --connect-timeout 6 --max-time 10 -A "$_VM_UA" -o /dev/null -w '%{url_effective}' "$link" 2>/dev/null || true)
-                    [[ -n "$final" ]] && printf '%s\n' "$final"
                 ) > "$tmp_dir/out_${idx}.txt" &
                 pids+=($!)
                 ;;

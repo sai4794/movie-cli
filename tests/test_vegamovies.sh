@@ -72,6 +72,31 @@ teardown() {
     [ "$status" -eq 0 ] || skip "no live R2 mirrors in current window"
 }
 
+@test "VegaMovies nexdrive routes gpdl2.hubcloud.cx to the redirect branch" {
+    # Offline: a nexdrive page with BOTH a gpdl2.hubcloud.cx pixel link and
+    # a vcloud link. The gpdl2 link must go through the follow-redirect
+    # branch (its final URL emitted), NOT the vcloud resolver — *hubcloud.cx*
+    # in the vcloud family used to shadow *gpdl*.hubcloud.cx (SC2221/2222)
+    # and dropped those streams.
+    local NEXDRIVE='<html><body>
+<a href="https://gpdl2.hubcloud.cx/?id=XYZ">pixel</a>
+<a href="https://vcloud.fit/j_123">vcloud</a>
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *gpdl2.hubcloud.cx*) printf '%s' 'https://final.example/real.mkv' ;;
+            *nexdrive*)          printf '%s' "$NEXDRIVE" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *)                   printf '%s' '' ;;
+        esac
+    }
+
+    local out
+    out="$(_vm_resolve_nexdrive "https://nexdrive.fit/genxfm1/" 2>/dev/null)"
+    [[ "$out" == "https://final.example/real.mkv" ]] || fail "gpdl2 not routed through redirect branch: $out"
+}
+
 @test "VegaMovies health succeeds" {
     run plugin_health
     [ "$status" -eq 0 ]
