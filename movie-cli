@@ -588,7 +588,7 @@ search_and_play() {
             # ponytail: save final position for --continue
             local end_pos
             end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-            (( end_pos > 0 )) && history_update_progress "$ep_id" "$end_pos" "$end_pos"
+            (( end_pos > 0 )) && history_update_progress "$ep_id" "$end_pos" "$end_pos" || true
 
             # Clear screen to wipe player output and print clean menu
             clear 2>/dev/null || true
@@ -684,7 +684,7 @@ search_and_play() {
     # ponytail: save final position for --continue
     local end_pos
     end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-    (( end_pos > 0 )) && history_update_progress "$selected_id" "$end_pos" "$end_pos"
+    (( end_pos > 0 )) && history_update_progress "$selected_id" "$end_pos" "$end_pos" || true
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -812,7 +812,7 @@ main() {
         # ponytail: save position for next --continue
         local end_pos
         end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-        (( end_pos > 0 )) && history_update_progress "$last_id" "$end_pos" "$end_pos"
+        (( end_pos > 0 )) && history_update_progress "$last_id" "$end_pos" "$end_pos" || true
         exit 0
     fi
 

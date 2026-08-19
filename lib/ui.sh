@@ -265,7 +265,8 @@ select_stream() {
 confirm() {
     local prompt="${1:-Continue?}"
     printf '%s [y/N] ' "$prompt" >&2
-    read -r answer </dev/tty
+    # No tty (piped/scripted run): decline instead of hanging forever.
+    read -r answer </dev/tty 2>/dev/null || return 1
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
