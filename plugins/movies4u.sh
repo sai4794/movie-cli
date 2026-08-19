@@ -489,7 +489,7 @@ import sys, re
 html = sys.stdin.read()
 want = int(sys.argv[1])
 seen = set()
-for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
+for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.[a-z]+/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
     l, cls = m.group(1), m.group(2)
     if l in seen: continue
     seen.add(l)
@@ -510,7 +510,7 @@ for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d
 import sys, re
 html = sys.stdin.read()
 seen = set()
-for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.(?:site|com)/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
+for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.[a-z]+/number/\d+)\"[^>]*class=\"([^\"]*)\"', html):
     l, cls = m.group(1), m.group(2)
     if l in seen: continue
     seen.add(l)
@@ -639,7 +639,7 @@ plugin_list_episodes() {
 import sys, re
 page = sys.stdin.read()
 want = int(sys.argv[1])
-links = re.findall(r"https://m4ulinks\.(?:site|com)/number/\d+", page)
+links = re.findall(r"https://m4ulinks\.[a-z]+/number/\d+", page)
 seasons = [(m.start(), int(m.group(1))) for m in re.finditer(r"Season\s*(\d+)", page, re.I)]
 for l in links:
     lpos = page.find(l)
@@ -653,7 +653,7 @@ for l in links:
         print(l)
         break
 ' "$season_number" 2>/dev/null || true)
-    [[ -z "$target" ]] && target=$(printf '%s\n' "$html" | grep -oE 'https://m4ulinks\.(site|com)/number/[0-9]+' | head -1 || true)
+    [[ -z "$target" ]] && target=$(printf '%s\n' "$html" | grep -oE 'https://m4ulinks\.[a-z]+/number/[0-9]+' | head -1 || true)
     [[ -z "$target" ]] && return 1
 
     # count "-:Episodes: N:-" blocks on that page

@@ -430,7 +430,8 @@ import sys, re
 page = sys.stdin.read()
 want = int(sys.argv[1])
 # walk through, tracking the last "Season N" heading before each archive link
-links = re.findall(r"https://dflinks\.online/archives/\d+", page)
+# NOTE: dflinks TLD rotates (online → cc → ...); match any dflinks host.
+links = re.findall(r"https://dflinks\.[a-z]+/archives/\d+", page)
 # find positions of season headings and archive links
 seasons = [(m.start(), int(m.group(1))) for m in re.finditer(r"Season\s*(\d+)", page, re.I)]
 for l in links:
@@ -445,7 +446,7 @@ for l in links:
         print(l)
 ' "$season" 2>/dev/null | sort -u || true)
     else
-        arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.online/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+        arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.[a-z]+/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
     fi
     [[ -z "$arch_links" ]] && die_plugin "No archive links on DudeFilms page for: $id"
 
@@ -532,7 +533,7 @@ plugin_list_episodes() {
     html=$(curl "${_DF_CURL[@]}" "${_DF_BASE}/${series_id}/" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.online/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+    arch_links=$(printf '%s' "$html" | grep -oE 'href="https?://dflinks\.[a-z]+/archives/[0-9]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
     ep_count=0
     if [[ -n "$arch_links" ]]; then
         local first_arch
