@@ -409,7 +409,10 @@ plugin_get_url() {
 import sys, re
 html = sys.stdin.read()
 episode = int(sys.argv[1])
-pat = re.compile(r"E%02d\s*(?:&#8211;|&ndash;|&mdash;|-)?\s*<a href=\"(https://(?:hubdrive|hubcloud)[^\"]+)\"" % episode)
+# Accept zero-padded (E01) AND unpadded (E1) labels — plugin_list_episodes
+# matches E(\d{1,2}); a get_url that only matched E%02d returned no links
+# on pages that label episodes unpadded.
+pat = re.compile(r"E0*%d\s*(?:&#8211;|&ndash;|&mdash;|-)?\s*<a href=\"(https://(?:hubdrive|hubcloud)[^\"]+)\"" % episode)
 for m in pat.finditer(html):
     print(m.group(1))
 ' "$episode" 2>/dev/null || true)

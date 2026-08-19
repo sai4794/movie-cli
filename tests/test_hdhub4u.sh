@@ -71,6 +71,41 @@ teardown() {
     printf '%s' "$output" | jq -e 'all(.[]; .url | startswith("http"))' >/dev/null
 }
 
+@test "HDhub4u get_url routes padded AND unpadded episode labels" {
+    # Offline: stub curl with a 2-episode fixture chain; each episode's
+    # hubdrive file resolves to a distinct mkv so routing errors (wrong
+    # episode pulled) are caught. Regression guard for the E%02d-vs-E(\d{1,2})
+    # mismatch that left unpadded "E2" labels unresolvable.
+    local DETAIL='<html><body>
+E1 &ndash; <a href="https://hubdrive.tips/file/ONE">link1</a>
+E2 - <a href="https://hubdrive.tips/file/TWO">link2</a>
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        local id
+        case "$url" in
+            *hubcloud.php*) id="${url##*id=}"; printf '<a href="https://cdn.example.workers.dev/%s.mkv" class="btn btn-success btn-lg h6">D</a>' "$id" ;;
+            */drive/*) id="${url##*/}"; printf '<a id="download" href="https://gamerxyt.com/hubcloud.php?id=%s">x</a>' "$id" ;;
+            *file/ONE*) printf '<a href="https://hubcloud.cx/drive/DRV-ONE">d</a>' ;;
+            *file/TWO*) printf '<a href="https://hubcloud.cx/drive/DRV-TWO">d</a>' ;;
+            *test-series*) printf '%s' "$DETAIL" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_get_url "test-series:1:2" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "ep2 (unpadded E2 label) resolved nothing"
+    run jq -e '.[0].url == "https://cdn.example.workers.dev/DRV-TWO.mkv"' <<< "$raw"
+    assert_success
+
+    raw="$(plugin_get_url "test-series:1:1" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "ep1 (padded E1 label) resolved nothing"
+    run jq -e '.[0].url == "https://cdn.example.workers.dev/DRV-ONE.mkv"' <<< "$raw"
+    assert_success
+}
+
 @test "HDhub4u health succeeds" {
     run plugin_health
     assert_success
