@@ -20,7 +20,10 @@ PLUGIN_DESCRIPTION="Brief description of this plugin"
 # Search for content
 # Args: $1=query, $2=quality (480|720|1080|any)
 # Output: JSON array to stdout
-# Each item MUST have: id, title, type
+# Each item MUST have: id, title, type, plugin  ← plugin = $PLUGIN_NAME;
+#   the CLI routes get_url by this field — missing .plugin silently drops
+#   the result from all-plugins selection (search results MUST NOT rely
+#   on the merge to tag them).
 # Each item MAY have: year, rating, poster
 plugin_search() {
     local query="$1"
@@ -28,13 +31,17 @@ plugin_search() {
 
     # TODO: Implement search
     # Example output:
-    # echo '[{"id":"123","title":"Example (2020)","type":"movie","year":"2020","rating":"7.5"}]'
+    # echo "[{\"id\":\"123\",\"title\":\"Example (2020)\",\"type\":\"movie\",\"plugin\":\"$PLUGIN_NAME\",\"year\":\"2020\",\"rating\":\"7.5\"}]"
     echo '[]'
 }
 
 # Get video URL for playback
 # Args: $1=id (from plugin_search), $2=quality
 # Output: JSON array to stdout: [{quality, url, size}]
+# Pitfalls: init `local merged="[]"` before conditionally filling it
+#   (set -u aborts on unset vars); never `printf '%s' "$page" | grep -q`
+#   on page-sized content (SIGPIPE → pipefail → silent failures) — grep
+#   files directly or use here-strings.
 plugin_get_url() {
     local id="$1"
     local quality="${2:-720}"
