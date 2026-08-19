@@ -300,7 +300,10 @@ _df_resolve_archive_episode() {
     local target
     target=$(printf '%02d' "$want_ep" 2>/dev/null || printf '%s' "$want_ep")
     local ep_url
-    ep_url=$(printf '%s' "$page" | grep -oE "<a[^>]*class=\"[^\"]*maxbutton-ep[^\"]*\"[^>]*href=\"[^\"]+\"[^>]*><span[^>]*>Episode[[:space:]]*${target}[[:space:]]*</span>" | head -1 | grep -oE 'href="[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
+    # NOTE: consume-then-slice, no `| head -1` — archive pages can carry
+    # multiple blocks per episode label (hubdrive + other mirrors), and an
+    # early-exit head SIGPIPEs grep under pipefail → intermittent miss.
+    ep_url=$(printf '%s' "$page" | grep -oE "<a[^>]*class=\"[^\"]*maxbutton-ep[^\"]*\"[^>]*href=\"[^\"]+\"[^>]*><span[^>]*>Episode[[:space:]]*${target}[[:space:]]*</span>" | grep -oE 'href="[^\"]+"' | sed -E 's/.*href="([^\"]+)".*/\1/' | awk 'NR==1{print}' 2>/dev/null || true)
     [[ -z "$ep_url" ]] && return 1
 
     # Resolve per host family (hubcloud drive chain, or direct candidate)
@@ -320,25 +323,13 @@ _df_resolve_archive_episode() {
 # Plugin API (v5)
 # ═══════════════════════════════════════════════════════════════
 
-plugin_search() {
-    local query="$1"
-    local quality="${2:-720}"
-    _load_df_config
-    _df_load_domains
-
-    local html
-    html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
-    [[ -z "$html" ]] && return 1
-
-    # WordPress search results: article links + titles.
-    # Relevance filter: WordPress falls back to the recent-posts grid when a
-    # query matches nothing (e.g. "kgf" vs dotted titles "K.G.F") — those
-    # unrelated rows must not surface in the CLI. Keep only results whose
-    # normalized title matches ALL significant query tokens (single shared
-    # token is too loose: "all of us are dead" would match any title
-    # containing "dead"), or contains the full normalized query.
-    local wp_results
-    wp_results=$(printf '%s' "$html" | python3 -c '
+# Parse a WP search page into result JSON. Used by plugin_search AND the
+# Cinemeta fallback re-search (commit 9a21514 wrapped this pipeline in a
+# variable and never printed it — dudefilms search returned nothing).
+_df_parse_search_page() {
+    local html_page="$1"
+    local q="$2"
+    printf '%s' "$html_page" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
 query = sys.argv[1].lower()
@@ -398,7 +389,65 @@ for o in out:
         seen.add(o["id"])
         dedup.append(o)
 print(__import__("json").dumps(dedup))
-' "$query" 2>/dev/null || printf '[]')
+' "$q" 2>/dev/null || printf '[]'
+}
+
+plugin_search() {
+    local query="$1"
+    local quality="${2:-720}"
+    _load_df_config
+    _df_load_domains
+
+    local html
+    html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
+    [[ -z "$html" ]] && return 1
+
+    # WordPress search results: article links + titles.
+    # Relevance filter: WordPress falls back to the recent-posts grid when a
+    # query matches nothing (e.g. "kgf" vs dotted titles "K.G.F") — those
+    # unrelated rows must not surface in the CLI. Keep only results whose
+    # normalized title matches ALL significant query tokens (single shared
+    # token is too loose: "all of us are dead" would match any title
+    # containing "dead"), or contains the full normalized query.
+    local wp_results
+    wp_results=$(_df_parse_search_page "$html" "$query")
+
+    # Cinemeta fallback: when the WP site search returns sparse results
+    # (title mismatch between the user query and the site title), query
+    # Cinemeta for the canonical title+year and re-search the site with it.
+    # Same shape as 4khdhub's fallback; REQUIRED print at the end (the
+    # 9a21514 refactor wrapped the parser output in a variable and never
+    # emitted it — dudefilms search returned nothing since Aug 10 2026).
+    local wp_count
+    wp_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$wp_count" -lt 2 ]]; then
+        source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
+        set +euo pipefail
+        local cm_all cm_tmp cm_rows
+        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
+        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
+            cm_tmp=$(mktemp)
+            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
+            while IFS= read -r meta; do
+                [[ -z "$meta" ]] && continue
+                local cname cyear ctype site_html cres
+                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
+                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
+                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
+                [[ -z "$cname" ]] && continue
+                site_html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
+                [[ -z "$site_html" ]] && continue
+                cres=$(_df_parse_search_page "$site_html" "${cname} ${cyear}")
+                [[ -n "$cres" && "$cres" != "[]" ]] && printf '%s\n' "$cres" >> "$cm_tmp"
+            done <<< "$cm_rows"
+            if [[ -s "$cm_tmp" ]]; then
+                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
+                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null || printf '%s' "$wp_results")
+            fi
+            rm -f "$cm_tmp"
+        fi
+    fi
+    printf '%s' "$wp_results"
 }
 
 plugin_get_url() {

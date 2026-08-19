@@ -82,6 +82,29 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "DudeFilms archive episode extraction survives multi-mirror pages" {
+    # Offline: an archive page with TWO blocks for the same episode label
+    # (multiple mirrors). Extraction must take the first href without an
+    # early-exit head (SIGPIPE race) and resolve it as a stream.
+    local ARCH='<html><body>
+<a class="maxbutton-ep" href="https://cdn.example.workers.dev/ep1.mkv"><span>Episode 01</span></a>
+<a class="maxbutton-ep" href="https://cdn.example.workers.dev/ep1b.mkv"><span>Episode 01</span></a>
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *archives*) printf '%s' "$ARCH" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local out
+    out="$(_df_resolve_archive_episode "https://dflinks.cc/archives/1" "1" 2>/dev/null || true)"
+    [[ "$out" == *"ep1.mkv"* ]] || fail "episode extraction failed on multi-mirror page: $out"
+    [[ "$out" != *"ep1b.mkv"* ]] || fail "did not take the first mirror: $out"
+}
+
 @test "DudeFilms health succeeds" {
     run plugin_health
     [ "$status" -eq 0 ]
