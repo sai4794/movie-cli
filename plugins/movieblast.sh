@@ -117,7 +117,14 @@ _mb_sign_url() {
     local encoded_sig
     encoded_sig=$(urlencode "$signature")
 
-    printf '%s?verify=%s-%s' "$url" "$timestamp" "$encoded_sig"
+    # Append verify as ?verify= or &verify= — URLs that already carry a
+    # query string (token params, .m3u8?... ) would otherwise get a second
+    # '?' and a malformed signature the server rejects.
+    if [[ "$url" == *\?* ]]; then
+        printf '%s&verify=%s-%s' "$url" "$timestamp" "$encoded_sig"
+    else
+        printf '%s?verify=%s-%s' "$url" "$timestamp" "$encoded_sig"
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════
