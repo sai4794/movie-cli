@@ -97,6 +97,38 @@ teardown() {
     [[ "$out" == "https://final.example/real.mkv" ]] || fail "gpdl2 not routed through redirect branch: $out"
 }
 
+@test "VegaMovies episode pairing stays inside its own label block" {
+    # Regression: the family-preference scan took the NEXT link of the
+    # preferred family AFTER the label, unbounded — an episode block that
+    # lacks vcloud/fastdl (only dgdrive) grabbed the NEXT episode's link
+    # and paired E1 with E2's stream. Now bounded by the next label.
+    local SERIES='<html><body>
+Season 1 <a href="https://nexdrive.fit/genxfm1/">links</a>
+</body></html>'
+    local EP_PAGE='<html><body>
+-:Episodes: 1:- <a href="https://dgdrive.pro/FILE1">
+-:Episodes: 2:- <a href="https://vcloud.fit/j2">
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *nexdrive*) printf '%s' "$EP_PAGE" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' "$SERIES" ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_list_episodes "series-slug" "1" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "no episodes emitted"
+    run jq -e 'length == 2' <<< "$raw"
+    assert_success
+    run jq -e '.[0].url == "https://dgdrive.pro/FILE1"' <<< "$raw"
+    assert_success
+    run jq -e '.[1].url == "https://vcloud.fit/j2"' <<< "$raw"
+    assert_success
+}
+
 @test "VegaMovies health succeeds" {
     run plugin_health
     [ "$status" -eq 0 ]

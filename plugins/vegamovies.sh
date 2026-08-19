@@ -699,8 +699,13 @@ for fam in families:
     alllinks[fam] = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
 pairs = []
 for lpos, n in labels:
+    # Bound the search to THIS episode block: the next link must sit
+    # between this label and the following label — otherwise a block that
+    # lacks the preferred family (e.g. vcloud) grabs the link of the NEXT
+    # episode and pairs E1 with E2s stream.
+    nxt_label = next((p for p, _ in labels if p > lpos), len(html))
     for fam in families:
-        nxt = next((l for p2, l in alllinks[fam] if p2 > lpos), None)
+        nxt = next((l for p2, l in alllinks[fam] if lpos < p2 < nxt_label), None)
         if nxt:
             pairs.append((n, nxt))
             break
