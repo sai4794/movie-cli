@@ -136,7 +136,8 @@ _update_release() {
     [[ -n "$src_dir" && -d "$src_dir" ]] || { rm -rf "$tmp_dir"; die_user "Archive layout unexpected. Aborting."; }
 
     # Backup current share dir (lib/plugins/config only — never CONF_DIR)
-    local backup_dir="${XDG_DATA_HOME:-$HOME/.local/share}/movie-cli-backup-$(date +%Y%m%d-%H%M%S)"
+    local backup_dir
+    backup_dir="${XDG_DATA_HOME:-$HOME/.local/share}/movie-cli-backup-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$backup_dir"
     cp -r "$share_dir/lib" "$backup_dir/lib" 2>/dev/null || true
     cp -r "$share_dir/plugins" "$backup_dir/plugins" 2>/dev/null || true
