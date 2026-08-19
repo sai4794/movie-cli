@@ -113,6 +113,42 @@ teardown() {
     [[ "$output" == *"https://"* ]]
 }
 
+@test "CineStream search ranks exact-title matches above prefix-only" {
+    # Regression: all titles merely starting with the query word scored 90,
+    # so Cinemeta order won — "Pushpavalli" ranked above the actual
+    # "Pushpa" films for query "pushpa". First-word-equality (95) must
+    # outrank prefix-only (90).
+    local MOVIE_JSON='{"metas":[
+        {"id":"tt7675948","name":"Pushpavalli","releaseInfo":"2017-","type":"series"},
+        {"id":"tt10887732","name":"Pushpa: The Rise - Part 1","releaseInfo":"2021","type":"movie"},
+        {"id":"tt0268555","name":"Pushpanjali","releaseInfo":"1970","type":"movie"}
+    ]}'
+    local SERIES_JSON='{"metas":[
+        {"id":"tt20872936","name":"Pushpa Impossible","releaseInfo":"2022-","type":"series"}
+    ]}'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *catalog/movie/top/search=pushpa*) printf '%s' "$MOVIE_JSON" ;;
+            *catalog/series/top/search=pushpa*) printf '%s' "$SERIES_JSON" ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    run plugin_search "pushpa" 720
+    assert_success
+    local raw="$output"
+    # A real Pushpa title (first-word match, 95) must be FIRST — the old
+    # scoring put prefix-only "Pushpavalli" on top.
+    run jq -e '.[0].title | startswith("Pushpa")' <<< "$raw"
+    assert_success
+    # Prefix-only titles (90) must rank BELOW the first-word group (95s).
+    run jq -e '([.[] | .title] | index("Pushpavalli (2017-)")) > 1' <<< "$raw"
+    assert_success
+    run jq -e '([.[] | .title] | index("Pushpanjali (1970)")) > 1' <<< "$raw"
+    assert_success
+}
+
 @test "CineStream search ranks relevant titles above unrelated ones" {
     run plugin_search "salaar"
     assert_success

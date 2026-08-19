@@ -179,9 +179,14 @@ plugin_search() {
     # so "K.G.F: Chapter 1 (2018)" matches "kgf"
     printf '%s' "$raw_results" | jq -c --arg q "$query" '
         [.[] | . + {_score: (
+            # first word of the title (before gsub strips spaces): a title
+            # that STARTS WITH the query word outranks one that merely
+            # contains it as a prefix ("Pushpa: The Rise" > "Pushpavalli").
+            (.title | split(" (")[0] | ascii_downcase | gsub("[^a-z0-9 ]"; "") | split(" ")[0]) as $first |
             (.title | split(" (")[0] | gsub("[^a-zA-Z0-9]"; "") | ascii_downcase) as $t |
             ($q | gsub("[^a-zA-Z0-9]"; "") | ascii_downcase) as $q |
             if $t == $q then 100
+            elif $first == $q then 95
             elif ($t | startswith($q)) then 90
             elif ($q | startswith($t)) then 80
             elif ($t | test("\\b" + $q + "\\b")) then 70
