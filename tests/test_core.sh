@@ -100,6 +100,25 @@ load 'setup'
     assert_failure
 }
 
+@test "env VERBOSE=0 beats config VERBOSE=1 (priority chain)" {
+    # Regression: boolean env markers only fired on == "1", so an explicit
+    # VERBOSE=0 export was ignored and a config-file VERBOSE=1 won —
+    # violating CLI > env > config > defaults. ${VAR+x} marks any set value.
+    export VERBOSE=0
+    source "$PROJECT_DIR/lib/config.sh"   # recompute env markers
+    printf 'VERBOSE=1\n' > "$CONF_DIR/movie-cli.conf"
+    load_all_config
+    [[ "$VERBOSE" == "0" ]]
+}
+
+@test "config VERBOSE=1 applies when env unset" {
+    unset VERBOSE VERBOSE_SET
+    source "$PROJECT_DIR/lib/config.sh"
+    printf 'VERBOSE=1\n' > "$CONF_DIR/movie-cli.conf"
+    load_all_config
+    [[ "$VERBOSE" == "1" ]]
+}
+
 @test "warn writes to stderr" {
     export QUIET=0
     run warn "test warning"

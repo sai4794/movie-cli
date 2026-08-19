@@ -20,10 +20,14 @@ CONF_NO_COLOR="${NO_COLOR:-0}"
 [[ -n "${PLAYER:-}" ]] && PLAYER_SET=1
 [[ -n "${QUALITY:-}" ]] && QUALITY_SET=1
 [[ -n "${PLUGIN:-}" ]] && PLUGIN_SET=1
-[[ "${VERBOSE:-0}" == "1" ]] && VERBOSE_SET=1
-[[ "${DEBUG:-0}" == "1" ]] && DEBUG_SET=1
-[[ "${QUIET:-0}" == "1" ]] && QUIET_SET=1
-[[ "${NO_COLOR:-0}" == "1" ]] && NO_COLOR_SET=1
+# Booleans use ${VAR+x} (set, any value): an explicit VERBOSE=0 / DEBUG=0 /
+# QUIET=0 / NO_COLOR=0 export is a real override and must beat a config-file
+# "1" (priority chain: CLI > env > config > defaults). The old
+# `[[ "${VERBOSE:-0}" == "1" ]]` marker meant env "0" was silently ignored.
+[[ -n "${VERBOSE+x}" ]] && VERBOSE_SET=1
+[[ -n "${DEBUG+x}" ]] && DEBUG_SET=1
+[[ -n "${QUIET+x}" ]] && QUIET_SET=1
+[[ -n "${NO_COLOR+x}" ]] && NO_COLOR_SET=1
 
 # Valid configuration keys (whitelist)
 _VALID_KEYS="PLAYER QUALITY PLUGIN VERBOSE DEBUG QUIET NO_COLOR"
