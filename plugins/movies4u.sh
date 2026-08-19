@@ -186,11 +186,12 @@ _m4u_resolve_resolver() {
 # pixel/gpdl redirector → real link (dl.php?link= extraction)
 _m4u_resolve_pixel() {
     local pixel_url="$1"
-    local page dl_url final url_eff
-    page=$(curl "${_M4U_CURL[@]}" -o /tmp/m4u_pixel_body.$$ -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
+    local page dl_url final url_eff tmpbody
+    tmpbody=$(mktemp)
+    page=$(curl "${_M4U_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
     url_eff="$page"
-    page=$(cat /tmp/m4u_pixel_body.$$ 2>/dev/null || true)
-    rm -f /tmp/m4u_pixel_body.$$
+    page=$(cat "$tmpbody" 2>/dev/null || true)
+    rm -f "$tmpbody"
     dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^" ]*dl\.php\?link=[^" ]+' | head -1 2>/dev/null || true)
     if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
         dl_url="$url_eff"

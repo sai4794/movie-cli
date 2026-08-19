@@ -223,15 +223,12 @@ _h4u_resolve_resolver() {
 
 _h4u_resolve_pixel() {
     local pixel_url="$1"
-    local page dl_url final url_eff
-
-    # Follow the redirect chain: pixel/gpdl → pixel.*.workers.dev → dl.php?link=...
-    # The final URL itself carries the link param (gpdl chain lands on dl.php);
-    # the page body references it too (pixel chain). Check both.
-    page=$(curl "${_H4U_CURL[@]}" -o /tmp/h4u_pixel_body.$$ -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
+    local page dl_url final url_eff tmpbody
+    tmpbody=$(mktemp)
+    page=$(curl "${_H4U_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
     url_eff="$page"
-    page=$(cat /tmp/h4u_pixel_body.$$ 2>/dev/null || true)
-    rm -f /tmp/h4u_pixel_body.$$
+    page=$(cat "$tmpbody" 2>/dev/null || true)
+    rm -f "$tmpbody"
     dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' ]*dl\.php\?link=[^"'"'"' ]+' | head -1 2>/dev/null || true)
     if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
         dl_url="$url_eff"
