@@ -31,29 +31,30 @@ declare -A LOADED_PLUGINS=()
 
 validate_plugin() {
     local file="$1"
-    # Validate without sourcing - parse file for required metadata
-    # This avoids the subshell-vs-main-shell execution difference vulnerability
-    local content
-    content=$(cat "$file" 2>/dev/null) || return 1
-    
-    # Check PLUGIN_NAME is defined (non-empty, not just commented)
-    printf '%s' "$content" | grep -qE '^PLUGIN_NAME="[^"]+"' || return 1
-    
+    [[ -f "$file" ]] || return 1
+
+    # Check PLUGIN_NAME is defined (non-empty, not just commented).
+    # NOTE: grep the FILE directly, never `cat | grep -q`: grep -q exits on
+    # the first match (PLUGIN_NAME is line 1), printf is still writing the
+    # rest of a 20-30KB plugin and gets SIGPIPE → 141 → pipefail → the
+    # plugin is silently rejected. Intermittent: bigger files race more.
+    grep -qE '^PLUGIN_NAME="[^"]+"' "$file" || return 1
+
     # Check PLUGIN_API_VERSION is defined
-    printf '%s' "$content" | grep -qE '^PLUGIN_API_VERSION="[^"]+"' || return 1
-    
+    grep -qE '^PLUGIN_API_VERSION="[^"]+"' "$file" || return 1
+
     # Check plugin_search function exists
-    printf '%s' "$content" | grep -qE '^plugin_search[[:space:]]*\(\)' || return 1
+    grep -qE '^plugin_search[[:space:]]*\(\)' "$file" || return 1
 
     # Check plugin_get_url function exists
-    printf '%s' "$content" | grep -qE '^plugin_get_url[[:space:]]*\(\)' || return 1
-    
+    grep -qE '^plugin_get_url[[:space:]]*\(\)' "$file" || return 1
+
     # Extract and check API version (simple grep for major version)
     local version
-    version=$(printf '%s' "$content" | grep -oE '^PLUGIN_API_VERSION="([0-9]+)' | head -1 | cut -d'"' -f2)
+    version=$(grep -oE '^PLUGIN_API_VERSION="([0-9]+)' "$file" | head -1 | cut -d'"' -f2)
     [[ -n "$version" ]] || return 1
     [[ "$version" == "$HOST_API_VERSION" ]] || return 1
-    
+
     return 0
 }
 

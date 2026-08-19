@@ -64,6 +64,42 @@ load 'setup'
     [[ "$status" -eq 5 ]]
 }
 
+@test "validate_plugin accepts a large plugin file deterministically" {
+    # Regression: validate_plugin used `printf '%s' "$content" | grep -q` —
+    # grep -q exits on the first match while printf is still writing a
+    # 20-30KB plugin → SIGPIPE → pipefail → plugin silently rejected.
+    # Intermittent, worse for bigger files. The function must grep the
+    # file directly. Extract it from the entrypoint (it lives there, not
+    # in lib/) and exercise it against a 50k-line synthetic plugin.
+    local fn
+    fn=$(awk '/^validate_plugin\(\)/,/^}/' "$PROJECT_DIR/movie-cli")
+    eval "$fn"
+    local big="$BATS_TEST_TMPDIR/big_plugin.sh"
+    {
+        printf 'PLUGIN_NAME="BigFile"\n'
+        printf 'PLUGIN_API_VERSION="5"\n'
+        printf 'plugin_search() { :; }\n'
+        printf 'plugin_get_url() { :; }\n'
+        for i in $(seq 1 50000); do printf '# filler %d\n' "$i"; done
+    } > "$big"
+
+    local i
+    for i in $(seq 1 10); do
+        run validate_plugin "$big"
+        assert_success
+    done
+}
+
+@test "validate_plugin rejects a plugin missing required fields" {
+    local fn
+    fn=$(awk '/^validate_plugin\(\)/,/^}/' "$PROJECT_DIR/movie-cli")
+    eval "$fn"
+    local bad="$BATS_TEST_TMPDIR/bad_plugin.sh"
+    printf 'PLUGIN_NAME="Bad"\nPLUGIN_API_VERSION="5"\n' > "$bad"
+    run validate_plugin "$bad"
+    assert_failure
+}
+
 @test "warn writes to stderr" {
     export QUIET=0
     run warn "test warning"
@@ -122,7 +158,10 @@ load 'setup'
     # Regression test: spinner output used to overwrite fallback list,
     # causing the program to appear blocked until Ctrl+C.
     # With --search-only, results should appear immediately.
-    run timeout 15 "$PROJECT_DIR/movie-cli" -s "inception"
+    # NOTE: search-all over 8 live plugins measured ~16s in Aug 2026 —
+    # the old 15s cap made this test flaky. 30s still catches a real
+    # block (spinner never stops) without flaking on slow sites.
+    run timeout 30 "$PROJECT_DIR/movie-cli" -s "inception"
     assert_success
     # Verify results are numbered and contain the query
     [[ "$output" == *"1. "* ]]
