@@ -155,7 +155,7 @@ _update_release() {
     fi
 
     # Swap (rm first — cp -r nests instead of overwriting, same bug as install.sh)
-    rm -rf "$share_dir/lib" "$share_dir/plugins" "$share_dir/config"
+    rm -rf "${share_dir:?}/lib" "${share_dir:?}/plugins" "${share_dir:?}/config"
     cp -r "$src_dir/lib" "$share_dir/lib"
     cp -r "$src_dir/plugins" "$share_dir/plugins"
     cp -r "$src_dir/config" "$share_dir/config"
