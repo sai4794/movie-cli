@@ -44,6 +44,16 @@ teardown() {
     assert_output '{"name":"MovieBlast","version":"1.0.0","types":["movie","series"]}'
 }
 
+@test "MovieBlast plugin_get_url fails cleanly when API has no sources" {
+    # Regression: qualities_json was uninitialized when .seasons/.videos was
+    # missing → set -u "unbound variable" crash inside the subshell instead
+    # of a clean die_plugin. Now initialized to [].
+    _mb_api() { printf '%s' '{}'; }
+    run plugin_get_url "12345" 720
+    assert_failure
+    [[ "$output" == *"No video sources"* ]]
+}
+
 @test "MovieBlast sign_url appends verify as ? for clean URLs" {
     local out
     out="$(_mb_sign_url "https://cdn.example/video.mkv")"

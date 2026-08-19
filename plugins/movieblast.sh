@@ -238,6 +238,7 @@ plugin_get_url() {
     _load_token
 
     local response
+    local qualities_json="[]"
     local series_id="" ep_season="" ep_episode=""
 
     # Parse encoded episode ID: "series_id:season:episode" for series
