@@ -111,3 +111,34 @@ load 'setup'
     [[ "${entries[2]}" == *'"progress":50'* ]]
     [[ "${entries[2]}" == *'"duration":200'* ]]
 }
+
+@test "history_update_progress fails cleanly on corrupt history" {
+    # Regression (d67859e): jq -s chokes on a non-JSON line and the function
+    # returns 1 — the CLI call sites must tolerate that instead of letting
+    # set -e abort playback AFTER it already succeeded.
+    printf 'not-json\n' > "$HISTORY_FILE"
+    run history_update_progress "1" 50 200
+    assert_failure
+    # History file must remain untouched (no partial write)
+    [[ "$(cat "$HISTORY_FILE")" == "not-json" ]]
+}
+
+@test "call-site pattern tolerates corrupt history under set -e" {
+    # The exact pattern movie-cli uses after playback:
+    #   local end_pos; end_pos=$(get_mpv_position ... || echo 0)
+    #   (( end_pos > 0 )) && history_update_progress "..." "..." "..." || true
+    # NOTE: end_pos must be declared+assigned first — under set -u an unset
+    # var in (( )) is an unbound-variable abort (that is why movie-cli
+    # always assigns before the guard).
+    printf 'not-json\n' > "$HISTORY_FILE"
+    history_update_progress "1" 50 200 || true
+    [[ "$(cat "$HISTORY_FILE")" == "not-json" ]]
+    local end_pos=100
+    set -e
+    (( end_pos > 0 )) && history_update_progress "1" 50 200 || true
+    [[ "$(cat "$HISTORY_FILE")" == "not-json" ]]
+    # zero/absent position: guard short-circuits, still no abort
+    end_pos=0
+    (( end_pos > 0 )) && history_update_progress "1" 50 200 || true
+    [[ "$(cat "$HISTORY_FILE")" == "not-json" ]]
+}
