@@ -21,6 +21,7 @@ All notable changes to movie-cli will be documented in this file.
 - **config env precedence for booleans** — `VERBOSE=0`/`DEBUG=0`/`QUIET=0`/`NO_COLOR=0` exports were ignored (markers only fired on `== "1"`), so a config-file "1" won against an explicit env "0" — violating CLI > env > config > defaults. Markers now use `${VAR+x}`.
 - **retry() silent no-op** — `retry 3 mycmd` (or `retry 3 1` with no command) shifted the command away and returned 0 without running anything. max/delay must now be numeric and a command must remain; bad args warn + return 1.
 - **history corrupt-line coverage** — bats regression tests for `history_update_progress` failing cleanly on a non-JSON line and the `(( end_pos > 0 )) && ... || true` call-site pattern surviving under `set -e`.
+- **vegamovies episode-pairing boundary** — the family-preference scan took the *next* preferred-family link after an episode label, unbounded; an episode block lacking vcloud/fastdl grabbed the next block's link (E1 paired with E2's stream). Search is now bounded by the following label. (Deterministic fixture: old `E1→vcloud/j2`, new `E1→dgdrive/FILE1`.)
 
 ### Added
 - **4KHDHub plugin** — 4K movies/series from 4khdhub.one via the HubCloud/HubDrive mirror chain. Search, movie/series playback, season/episode listing, and a full resolver walk (hubcloud drive → gamerxyt resolver → workers.dev / fsl-buckets / pixel→googleusercontent / pixeldrain direct links). Reverse-engineered from the CloudStream FourKHDHub extension.
