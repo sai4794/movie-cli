@@ -468,8 +468,12 @@ plugin_list_seasons() {
 
     # Season-pack post (e.g. "All of Us Are Dead (Season 1) ... ALL Episodes").
     # Extract the season number from the title; fall back to 1.
+    # NOTE: no `| head -1` mid-pipeline — page-sized input + early-exit head
+    # SIGPIPEs the producer under pipefail (same race class as grep -q).
+    # Consume everything, then take the first line from the small result.
     local season
-    season=$(printf '%s' "$html" | grep -oiE 'Season [0-9]+' | head -1 | grep -oE '[0-9]+' 2>/dev/null || true)
+    season=$(grep -oiE 'Season[[:space:]]*[0-9]+' <<< "$html" | grep -oE '[0-9]+' 2>/dev/null || true)
+    [[ -n "$season" ]] && season=$(printf '%s\n' "$season" | awk 'NR==1{print}')
     [[ -z "$season" ]] && season="1"
 
     printf '[{"id":"%s","title":"Season %s","number":%s}]\n' "$season" "$season" "$season"

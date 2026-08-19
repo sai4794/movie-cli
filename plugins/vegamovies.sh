@@ -496,7 +496,10 @@ print("\n".join(dict.fromkeys(out)))
             [[ -z "$link" ]] && continue
             ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
             [[ -z "$ep_html" ]] && continue
-            if printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+            # NOTE: here-string (<<<), not a printf pipe — grep -q exits on the
+            # first match and a large page makes printf hit SIGPIPE (141) →
+            # pipefail → the check flips to false intermittently.
+            if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
                 found=$(printf '%s' "$ep_html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
@@ -678,12 +681,12 @@ print("\n".join(dict.fromkeys(out)))
     while IFS= read -r link; do
         [[ -z "$link" ]] && continue
         ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
-        if [[ -z "$ep_html" ]] || ! printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+        if [[ -z "$ep_html" ]] || ! grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
             sleep 1
             ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
         fi
         [[ -z "$ep_html" ]] && continue
-        if printf '%s' "$ep_html" | grep -qE 'Episodes[: ]*[0-9]+'; then
+        if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
             episode_pairs=$(printf '%s' "$ep_html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
