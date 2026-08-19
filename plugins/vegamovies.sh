@@ -675,7 +675,14 @@ for pos, kind, val in tokens:
         out.append(val)
 print("\n".join(dict.fromkeys(out)))
 ' "$season_number" 2>/dev/null || true)
-    [[ -z "$season_links" ]] && die_plugin "No season links for season $season_number"
+    if [[ -z "$season_links" ]]; then
+        # Bundle post with no direct per-season links (S1-5 packs etc.):
+        # emit a single pack entry so the title stays listable/playable
+        # instead of dying with "No season links".
+        printf '[{"id":"%s:%s:1","title":"Season %s pack","number":1,"episode":1,"season":%s}]\n' \
+            "$series_id" "$season_number" "$season_number" "$season_number"
+        return 0
+    fi
 
     # 2) find the "Episode Links" page among this season's links (its page
     #    has per-episode labels); fetch it and extract labeled episodes.

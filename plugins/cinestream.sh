@@ -178,15 +178,22 @@ plugin_search() {
     # Strip year suffix " (YYYY)" and non-alphanumerics before matching,
     # so "K.G.F: Chapter 1 (2018)" matches "kgf"
     printf '%s' "$raw_results" | jq -c --arg q "$query" '
+        to_entries | map(.value + {_idx: .key}) |
         [.[] | . + {_score: (
             # first word of the title (before gsub strips spaces): a title
             # that STARTS WITH the query word outranks one that merely
             # contains it as a prefix ("Pushpa: The Rise" > "Pushpavalli").
+            # Year-bearing records are canonical: "Inception (2010)" beats
+            # the year-less Cinemeta stub "Inception" that has no streams.
             (.title | split(" (")[0] | ascii_downcase | gsub("[^a-z0-9 ]"; "") | split(" ")[0]) as $first |
             (.title | split(" (")[0] | gsub("[^a-zA-Z0-9]"; "") | ascii_downcase) as $t |
             ($q | gsub("[^a-zA-Z0-9]"; "") | ascii_downcase) as $q |
-            if $t == $q then 100
+            ((.year // "") != "") as $has_year |
+            if $t == $q and ($has_year | not) then 98
+            elif $first == $q and $has_year then 100
+            elif $t == $q then 100
             elif $first == $q then 95
+            elif ($t | startswith($q)) and $has_year then 96
             elif ($t | startswith($q)) then 90
             elif ($q | startswith($t)) then 80
             elif ($t | test("\\b" + $q + "\\b")) then 70
@@ -195,8 +202,11 @@ plugin_search() {
             end
         )}] |
         [.[] | select(._score > 0)] |
-        sort_by(._score) | reverse |
-        [.[] | del(._score, ._name)]
+        # score DESC, original catalog order ASC — sort_by+reverse would
+        # flip the stable order among equal scores ("Inception (2010)"
+        # vs "Inception Premiere (2010)").
+        sort_by([-._score, ._idx]) |
+        [.[] | del(._score, ._name, ._idx)]
     ' 2>/dev/null
 }
 
