@@ -73,6 +73,7 @@ _m4u_load_domains() {
     dom=$(printf '%s' "$cached" | jq -r '.["movies4u"] // empty' 2>/dev/null || true)
     [[ -z "$dom" || "$dom" == "null" ]] && return 0
     dom="${dom%/}"
+    dom="${dom## }"
     if [[ "$dom" != "$_M4U_BASE" ]]; then
         debug "Movies4u domain rotated: $_M4U_BASE → $dom"
         _M4U_BASE="$dom"

@@ -80,6 +80,7 @@ _4kh_load_domains() {
     dom=$(printf '%s' "$cached" | jq -r '.["4khdhub"] // empty' 2>/dev/null || true)
     [[ -z "$dom" || "$dom" == "null" ]] && return 0
     dom="${dom%/}"
+    dom="${dom## }"
     if [[ "$dom" != "$_4KH_BASE" ]]; then
         debug "4KHDHub domain rotated: $_4KH_BASE → $dom"
         _4KH_BASE="$dom"

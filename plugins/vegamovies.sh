@@ -83,6 +83,7 @@ _vm_load_domains() {
     dom=$(printf '%s' "$cached" | jq -r '.["vegamovies"] // empty' 2>/dev/null || true)
     [[ -z "$dom" || "$dom" == "null" ]] && return 0
     dom="${dom%/}"
+    dom="${dom## }"
     if [[ "$dom" != "$_VM_BASE" ]]; then
         debug "VegaMovies domain rotated: $_VM_BASE → $dom"
         _VM_BASE="$dom"

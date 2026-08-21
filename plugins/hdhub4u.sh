@@ -91,6 +91,7 @@ _h4u_load_domains() {
     dom=$(printf '%s' "$cached" | jq -r '.["HDHUB4u"] // empty' 2>/dev/null || true)
     [[ -z "$dom" || "$dom" == "null" ]] && return 0
     dom="${dom%/}"
+    dom="${dom## }"
     if [[ "$dom" != "$_H4U_BASE" ]]; then
         debug "HDhub4u domain rotated: $_H4U_BASE → $dom"
         _H4U_BASE="$dom"

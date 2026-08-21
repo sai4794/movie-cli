@@ -82,6 +82,7 @@ _df_load_domains() {
     dom=$(printf '%s' "$cached" | jq -r '.["dudefilms"] // empty' 2>/dev/null || true)
     [[ -z "$dom" || "$dom" == "null" ]] && return 0
     dom="${dom%/}"
+    dom="${dom## }"
     if [[ "$dom" != "$_DF_BASE" ]]; then
         debug "DudeFilms domain rotated: $_DF_BASE → $dom"
         _DF_BASE="$dom"
