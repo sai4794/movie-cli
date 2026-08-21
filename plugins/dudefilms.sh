@@ -594,7 +594,7 @@ plugin_list_episodes() {
             arch_page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$first_arch" 2>/dev/null || true)
         fi
         ep_count=$(printf '%s' "$arch_page" | grep -oE 'Episode[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | tail -1 2>/dev/null || echo 0)
-        [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$arch_page" | grep -cE 'maxbutton-ep' 2>/dev/null || echo 0)
+        [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$arch_page" | grep -cE 'maxbutton-ep' 2>/dev/null || true)
     fi
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
 

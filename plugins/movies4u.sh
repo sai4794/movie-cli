@@ -660,7 +660,7 @@ for l in links:
     local page ep_count
     page=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" "$target" 2>/dev/null || true)
     ep_count=$(printf '%s' "$page" | grep -oE 'Episodes?[[:space:]]*:?[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | tail -1 2>/dev/null || echo 0)
-    [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$page" | grep -cE 'downloads-btns-div' 2>/dev/null || echo 1)
+    [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$page" | grep -cE 'downloads-btns-div' 2>/dev/null || true)
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
 
     local i eps_json="[]"
