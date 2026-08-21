@@ -509,6 +509,9 @@ for l in links:
             if [[ -n "$episode" ]]; then
                 # Per-episode: pick the Nth maxbutton-ep anchor from the archive
                 streams=$(_df_resolve_archive_episode "$link" "$episode" 2>/dev/null || true)
+                # Season packs have no per-episode markers — fall back to all
+                # archive download links (hubcloud, driveapp, etc.)
+                [[ -z "$streams" ]] && streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
             else
                 streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
             fi
