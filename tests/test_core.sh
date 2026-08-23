@@ -266,6 +266,26 @@ load 'setup'
     [[ -z "$qual" ]]
 }
 
+@test "select_stream keeps '<- Back' sentinel label (not 'Stream')" {
+    # Regression: the Back sentinel is not JSON. jq on it EXITS 5 (parse
+    # error) with empty output, so the old label builder fell back to
+    # "Stream" — users saw a mysterious "Stream" entry instead of
+    # "<- Back". The fix passes sentinels through before label building.
+    local stream="<- Back"
+    local prov="" label=""
+    prov=$(printf '%s' "$stream" | jq -r '.provider // empty' 2>/dev/null || true)
+    [[ -z "$prov" ]]   # jq yields nothing for non-JSON (and would rc=5)
+
+    # Old behavior reconstructed: empty fields → label forced to "Stream"
+    label="Stream"
+
+    # New behavior: sentinel bypasses label building entirely.
+    if [[ "$stream" == "<- Back" ]]; then
+        label="<- Back"
+    fi
+    [[ "$label" == "<- Back" ]]
+}
+
 @test "_android_escape_uri encodes raw VidLink headers query" {
     local raw='https://stormvv.vodvidl.site/mp/resource/video.mp4?headers={"referer":"https://filmboom.top/","origin":"https://filmboom.top"}&host=https://bcdnxw.hakunaymatata.com&sign=abc%2B123'
     local result

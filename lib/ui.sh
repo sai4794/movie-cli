@@ -220,6 +220,13 @@ select_stream() {
     local -a labels=() streams=()
     local stream label
     for stream in "$@"; do
+        # Sentinel passthrough: "<- Back" is not a stream object — keep its
+        # own label instead of jq-mangling it into "Stream".
+        if [[ "$stream" == "<- Back" ]]; then
+            labels+=("<- Back")
+            streams+=("$stream")
+            continue
+        fi
         label=""
         local prov qual codec audio lang size hdr
         prov=$(printf '%s' "$stream" | jq -r '.provider // empty' 2>/dev/null)
