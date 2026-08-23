@@ -9,6 +9,9 @@
 #   Known dead hosts (skipped): hdstream4u.com (morencius "Downloads disabled"),
 #   hubcdn.sbs (bonuscaf ad shortener), gadgetsweb.xyz (shortener chain)
 
+[[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
+[[ -f "${LIB_DIR:-}/cinemeta.sh" ]] && source "${LIB_DIR}/cinemeta.sh"
+
 # ═══════════════════════════════════════════════════════════════
 # Plugin Metadata
 # ═══════════════════════════════════════════════════════════════
@@ -35,34 +38,23 @@ _H4U_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/m
 _H4U_DOMAINS_CACHE_KEY="hdhub4u_domains"
 _H4U_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
-# Rebuild the curl array — Referer depends on the current base
+# Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh)
+_H4U_REJECT_GLOBS='*tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*'
+_H4U_FAMILY_GLOBS='*workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*'
+_H4U_PIXEL_GLOBS='*pixel.hubcloud.cx*|*gpdl.hubcloud.cx*'
+
+# Rebuild curl arrays — Referer depends on the current base.
+# _SDK_CURL mirrors _H4U_CURL so SDK resolvers send identical requests.
 _h4u_rebuild_curl() {
     _H4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/")
+    sdk_http "$_H4U_UA" "${_H4U_BASE}/"
 }
 
 _load_h4u_config() {
-    local conf_file="$CONF_DIR/hdhub4u.conf"
-    [[ -f "$conf_file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        local key="${line%%=*}"
-        local value="${line#*=}"
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-        [[ -z "$key" ]] && continue
-        case "$key" in
-            BASE_URL) _H4U_BASE="$value"; _H4U_BASE_USER_SET=1 ;;
-            SEARCH_URL) _H4U_SEARCH="$value" ;;
-            ALLOW_HOSTS) _H4U_ALLOW_HOSTS="$value" ;;
-        esac
-    done < "$conf_file"
+    sdk_conf_load "$CONF_DIR/hdhub4u.conf" H4U BASE_URL SEARCH_URL ALLOW_HOSTS
+    [[ -n "${H4U_BASE_URL+x}" && -n "${H4U_BASE_URL}" ]] && { _H4U_BASE="$H4U_BASE_URL"; _H4U_BASE_USER_SET=1; }
+    [[ -n "${H4U_SEARCH_URL+x}" && -n "${H4U_SEARCH_URL}" ]] && _H4U_SEARCH="$H4U_SEARCH_URL"
+    [[ -n "${H4U_ALLOW_HOSTS+x}" ]] && _H4U_ALLOW_HOSTS="$H4U_ALLOW_HOSTS"
     _h4u_rebuild_curl
 }
 
@@ -70,33 +62,26 @@ _load_h4u_config() {
 # day, use the returned domain unless the user pinned BASE_URL in conf.
 _h4u_load_domains() {
     [[ "$_H4U_BASE_USER_SET" == "1" ]] && return 0
-
-    local cached=""
-    if declare -f cache_get >/dev/null 2>&1; then
-        cached=$(cache_get "$_H4U_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
-    fi
-    if [[ -z "$cached" ]]; then
-        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_H4U_UA" "$_H4U_DOMAINS_URL" 2>/dev/null || true)
-        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
-            if declare -f cache_set >/dev/null 2>&1; then
-                cache_set "$_H4U_DOMAINS_CACHE_KEY" "$cached" || true
-            fi
-        else
-            cached=""
-        fi
-    fi
-    [[ -z "$cached" ]] && return 0
-
     local dom
-    dom=$(printf '%s' "$cached" | jq -r '.["HDHUB4u"] // empty' 2>/dev/null || true)
-    [[ -z "$dom" || "$dom" == "null" ]] && return 0
-    dom="${dom%/}"
-    dom="${dom## }"
-    if [[ "$dom" != "$_H4U_BASE" ]]; then
-        debug "HDhub4u domain rotated: $_H4U_BASE → $dom"
-        _H4U_BASE="$dom"
-        _h4u_rebuild_curl
-    fi
+    dom=$(sdk_rotate_domain "$_H4U_DOMAINS_CACHE_KEY" "$_H4U_DOMAINS_URL" \
+        "HDHUB4u" "$_H4U_BASE" "HDhub4u" "$_H4U_UA") || return 0
+    [[ -z "$dom" ]] && return 0
+    _H4U_BASE="$dom"
+    _h4u_rebuild_curl
+}
+
+# Fuzzy host matching for resolver links (CloudStream-style: match broadly,
+# let verify_streams filter garbage). See lib/pluginsdk.sh sdk_is_stream_candidate.
+_h4u_is_stream_candidate() {
+    sdk_is_stream_candidate "$1" "$_H4U_ALLOW_HOSTS" "$_H4U_REJECT_GLOBS" "$_H4U_FAMILY_GLOBS"
+}
+
+_h4u_quality() {
+    sdk_quality_token "$1"
+}
+
+_h4u_stream_json() {
+    sdk_stream_json_encoded "hdhub4u" "$(sdk_quality_token "$1")" "$1"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -119,127 +104,10 @@ _h4u_resolve_hubdrive() {
 
 # hubcloud.*/drive/ID → #download href → resolver page → direct links
 _h4u_resolve_drive() {
-    local drive_url="$1"
-    local page href base
-
-    page=$(curl "${_H4U_CURL[@]}" "$drive_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    if [[ "$drive_url" == *"hubcloud.php"* ]]; then
-        href="$drive_url"
-    else
-        href=$(printf '%s' "$page" | grep -oE 'id="download" href="[^"]+"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
-        [[ -z "$href" ]] && return 1
-        if [[ "$href" != http* ]]; then
-            base=$(printf '%s' "$drive_url" | sed -E 's|^(https?://[^/]+).*|\1|')
-            href="${base}/${href#/}"
-        fi
-    fi
-
-    _h4u_resolve_resolver "$href"
+    sdk_resolve_drive "$1" _h4u_is_stream_candidate 1 "$_H4U_PIXEL_GLOBS"
 }
 
-# Fuzzy host matching for resolver links (CloudStream-style: match broadly,
-# let verify_streams filter garbage). Accepts a link as a stream candidate if:
-#   1. host contains a known file-host family (substring match handles rotated
-#      subdomains: workers.dev, r2.cloudflarestorage, fsl*, pixeldrain,
-#      hubcloud, hubdrive, filescdn, aiplex, googleusercontent), OR
-#   2. URL looks like a direct media file (.mkv/.mp4/.m3u8/.webm/.ts/.flv), OR
-#   3. host matches a user-configured ALLOW_HOSTS token (comma-separated
-#      substrings in $CONF_DIR/hdhub4u.conf — add new hosts without editing
-#      the plugin).
-# Hard rejects: telegram, ad, navigation, and shortener links.
-_h4u_is_stream_candidate() {
-    local link="$1"
-    local lower
-    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # Hard rejects — these are never streams
-    case "$lower" in
-        *tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*)
-            return 1 ;;
-    esac
-
-    # User-configured host allowlist wins over everything
-    if [[ -n "$_H4U_ALLOW_HOSTS" ]]; then
-        local host allow
-        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
-        local -a allow_arr=()
-        IFS=',' read -r -a allow_arr <<< "$_H4U_ALLOW_HOSTS"
-        for allow in "${allow_arr[@]}"; do
-            allow="${allow,,}"
-            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
-        done
-    fi
-
-    # Known file-host families (substring match = fuzzy across rotated hosts)
-    case "$lower" in
-        *workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*)
-            return 0 ;;
-    esac
-
-    # Direct media URL heuristic — video extension anywhere in the URL
-    case "$lower" in
-        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
-            return 0 ;;
-    esac
-
-    return 1
-}
-
-_h4u_resolve_resolver() {
-    local resolver_url="$1"
-    local page
-
-    page=$(curl "${_H4U_CURL[@]}" "$resolver_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    printf '%s' "$page" | grep -oE '<a[^>]*href="https?://[^"]+"[^>]*class="[^"]*btn[^"]*"' | \
-        sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
-        case "$link" in
-            *pixel.hubcloud.cx*|*gpdl.hubcloud.cx*)
-                _h4u_resolve_pixel "$link"
-                ;;
-            *pixeldrain*)
-                # pixeldrain.dev/u/ID → API form /api/file/ID?download (HubCloud.kt logic)
-                if [[ "$link" == *"/api/file/"* || "$link" == *"download"* ]]; then
-                    printf '%s\n' "$link"
-                else
-                    local pd_base pd_id
-                    pd_base=$(printf '%s' "$link" | sed -E 's|^(https?://[^/]+).*|\1|')
-                    pd_id="${link##*/}"
-                    printf '%s\n' "${pd_base}/api/file/${pd_id}?download"
-                fi
-                ;;
-            *)
-                # Fuzzy match — no exact host allowlist; unknown-but-plausible
-                # mirrors are accepted here and filtered by verify_streams later
-                if _h4u_is_stream_candidate "$link"; then
-                    printf '%s\n' "$link"
-                fi
-                ;;
-        esac
-    done
-}
-
-_h4u_resolve_pixel() {
-    local pixel_url="$1"
-    local page dl_url final url_eff tmpbody
-    tmpbody=$(mktemp)
-    page=$(curl "${_H4U_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
-    url_eff="$page"
-    page=$(cat "$tmpbody" 2>/dev/null || true)
-    rm -f "$tmpbody"
-    dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' ]*dl\.php\?link=[^"'"'"' ]+' | head -1 2>/dev/null || true)
-    if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
-        dl_url="$url_eff"
-    fi
-    [[ -z "$dl_url" ]] && return 1
-    final=$(printf '%s' "$dl_url" | sed -E 's/.*link=//' | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))' 2>/dev/null || true)
-    [[ -z "$final" ]] && return 1
-    printf '%s\n' "$final"
-}
-
+# Resolve any supported mirror URL to candidate stream URLs
 _h4u_resolve_link() {
     local url="$1"
     case "$url" in
@@ -252,58 +120,37 @@ _h4u_resolve_link() {
     esac
 }
 
-_h4u_quality() {
-    local s="$1"
-    if [[ "$s" =~ (2160[pP]|(^|[^a-zA-Z0-9])4[Kk]([^a-zA-Z0-9]|$)) ]]; then printf '4K'
-    elif [[ "$s" =~ (1440[pP]|2[Kk]) ]]; then printf '1440'
-    elif [[ "$s" =~ 1080[pP] ]]; then printf '1080'
-    elif [[ "$s" =~ 720[pP] ]]; then printf '720'
-    elif [[ "$s" =~ 480[pP] ]]; then printf '480'
-    elif [[ "$s" =~ 360[pP] ]]; then printf '360'
-    else printf 'auto'
-    fi
-}
-
-_h4u_stream_json() {
-    local url="$1"
-    local enc qual
-    enc=$(printf '%s' "$url" | python3 -c '
-import sys, urllib.parse
-# brackets/spaces/plus must be encoded — curl globbing breaks on raw [] and rc=3
-print(urllib.parse.quote(sys.stdin.read().strip(), safe=":/?&=%,.+-_()~"))
-' 2>/dev/null || printf '%s' "$url")
-    qual=$(_h4u_quality "$url")
-    jq -nc --arg u "$enc" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "hdhub4u"}'
-}
-
 # ═══════════════════════════════════════════════════════════════
 # Plugin Functions
 # ═══════════════════════════════════════════════════════════════
 
-plugin_search() {
-    local query="$1"
-    local quality="${2:-720}"
-    _load_h4u_config
-    _h4u_load_domains
+# Typesense search request (GET with query params — POST → 403).
+# Args: query, limit, [full]. FULL=1 sends the primary-search parameter set
+# (weights/highlight/cache); the Cinemeta-fallback re-search historically
+# used a minimal set and keeps sending exactly that.
+# Prints raw response body.
+_h4u_typesense_query() {
+    local q="$1" limit="${2:-15}" full="${3:-0}"
+    local -a cmd=(curl -s --connect-timeout 8 --max-time 25
+        -A "$_H4U_UA"
+        -H "Referer: ${_H4U_BASE}/"
+        -G "$_H4U_SEARCH"
+        --data-urlencode "q=$q"
+        --data-urlencode "query_by=post_title,category,stars,director,imdb_id"
+        --data-urlencode "sort_by=sort_by_date:desc"
+        --data-urlencode "limit=$limit")
+    if [[ "$full" == "1" ]]; then
+        cmd+=(--data-urlencode "query_by_weights=4,2,2,2,4"
+            --data-urlencode "highlight_fields=none"
+            --data-urlencode "use_cache=true"
+            --data-urlencode "page=1")
+    fi
+    "${cmd[@]}" 2>/dev/null || true
+}
 
-    # Typesense search API — GET with query params (POST → 403)
-    local response
-    response=$(curl -s --connect-timeout 8 --max-time 25 \
-        -A "$_H4U_UA" \
-        -H "Referer: ${_H4U_BASE}/" \
-        -G "$_H4U_SEARCH" \
-        --data-urlencode "q=$query" \
-        --data-urlencode "query_by=post_title,category,stars,director,imdb_id" \
-        --data-urlencode "query_by_weights=4,2,2,2,4" \
-        --data-urlencode "sort_by=sort_by_date:desc" \
-        --data-urlencode "limit=15" \
-        --data-urlencode "highlight_fields=none" \
-        --data-urlencode "use_cache=true" \
-        --data-urlencode "page=1" 2>/dev/null) || return 1
-    [[ -z "$response" ]] && return 1
-
-    local wp_results
-    wp_results=$(printf '%s' "$response" | jq -c '
+# Typesense hit → standard result object (full title cleaner).
+_h4u_typesense_results() {
+    printf '%s' "$1" | jq -c '
         [.hits[]?.document |
         {
             id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
@@ -327,55 +174,60 @@ plugin_search() {
             rating: null,
             poster: .post_thumbnail
         }]
-    ' 2>/dev/null || printf '[]')
+    ' 2>/dev/null || printf '[]'
+}
 
-    # Cinemeta fallback: when Typesense search returns sparse results
-    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
-    set +euo pipefail
-    local cm_count
-    cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
-    if [[ "$cm_count" -lt 2 ]]; then
-        local cm_all cm_tmp cm_rows
-        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
-        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
-            cm_tmp=$(mktemp)
-            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
-            while IFS= read -r meta; do
-                [[ -z "$meta" ]] && continue
-                local cname cyear ctype search_resp
-                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
-                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
-                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
-                [[ -z "$cname" ]] && continue
-                search_resp=$(curl -s --connect-timeout 8 --max-time 25 \
-                    -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/" -G "$_H4U_SEARCH" \
-                    --data-urlencode "q=${cname} ${cyear}" \
-                    --data-urlencode "query_by=post_title,category,stars,director,imdb_id" \
-                    --data-urlencode "sort_by=sort_by_date:desc" \
-                    --data-urlencode "limit=5" 2>/dev/null || true)
-                [[ -z "$search_resp" ]] && continue
-                printf '%s' "$search_resp" | jq -c '
-                    [.hits[]?.document | {
-                        id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
-                        title: (.post_title | sub("^Download "; "") | gsub("\\[[^\\]]*\\]"; " ") | gsub("\\{[^}]*\\}"; " ") | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "") | gsub("\\s+"; " ") | gsub("\\s+$"; "")),
-                        type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
-                        year: .year,
-                        rating: null,
-                        poster: .post_thumbnail
-                    }]
-                ' 2>/dev/null | while IFS= read -r j; do
-                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
-                done
-            done <<< "$cm_rows"
-            if [[ -s "$cm_tmp" ]]; then
-                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
-                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
-                    || printf '%s' "$wp_results")
-            fi
-            rm -f "$cm_tmp"
-        fi
-    fi
-    printf '%s' "$wp_results"
+plugin_search() {
+    local query="$1"
+    local quality="${2:-720}"
+    _load_h4u_config
+    _h4u_load_domains
+
+    local response
+    response=$(_h4u_typesense_query "$query" 15 1) || return 1
+    [[ -z "$response" ]] && return 1
+
+    local wp_results
+    wp_results=$(_h4u_typesense_results "$response")
+
+    # Cinemeta fallback (shared orchestrator): re-query Typesense per
+    # canonical title when the primary search is sparse.
+    cinemeta_search_fallback "$query" "$wp_results" _h4u_research_site
+}
+
+# Cinemeta research callback: Typesense re-search with simplified cleaner.
+_h4u_research_site() {
+    local cname="$1" cyear="$2"
+    local search_resp
+    search_resp=$(_h4u_typesense_query "${cname} ${cyear}" 5)
+    [[ -z "$search_resp" ]] && return 0
+    printf '%s' "$search_resp" | jq -c '
+        [.hits[]?.document | {
+            id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
+            title: (.post_title | sub("^Download "; "") | gsub("\\[[^\\]]*\\]"; " ") | gsub("\\{[^}]*\\}"; " ") | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "") | gsub("\\s+"; " ") | gsub("\\s+$"; "")),
+            type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
+            year: .year,
+            rating: null,
+            poster: .post_thumbnail
+        }]
+    ' 2>/dev/null || true
+}
+
+# Fan-out worker: resolve ONE mirror link into stream JSON objects.
+_h4u_get_url_worker() {
+    local link="$1"
+    local streams
+    streams=$(_h4u_resolve_link "$link") || return 0
+    [[ -z "$streams" ]] && return 0
+    local su
+    while IFS= read -r su; do
+        [[ -z "$su" ]] && continue
+        # Skip SAMPLE/trailer preview files (uploaders ship a 5-min
+        # "SAMPLE-*.mkv" next to the real movie; it outranks it at
+        # the same resolution in sort_streams)
+        [[ "${su,,}" == *sample* ]] && continue
+        _h4u_stream_json "$su"
+    done <<< "$streams"
 }
 
 plugin_get_url() {
@@ -423,37 +275,10 @@ for m in pat.finditer(html):
 
     [[ -z "$mirror_links" ]] && die_plugin "No resolvable mirror links on HDhub4u page for: $id"
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    local pids=() idx=0
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        (
-            local streams=""
-            streams=$(_h4u_resolve_link "$link" 2>/dev/null || true)
-            if [[ -n "$streams" ]]; then
-                printf '%s\n' "$streams" | while IFS= read -r su; do
-                    [[ -z "$su" ]] && continue
-                    # Skip SAMPLE/trailer preview files (uploaders ship a 5-min
-                    # "SAMPLE-*.mkv" next to the real movie; it outranks it at
-                    # the same resolution in sort_streams)
-                    [[ "${su,,}" == *sample* ]] && continue
-                    _h4u_stream_json "$su"
-                done > "$tmp_dir/out_${idx}.json"
-            fi
-        ) &
-        pids+=($!)
-        idx=$((idx + 1))
-    done <<< "$mirror_links"
-
-    wait "${pids[@]}" 2>/dev/null || true
-
-    local merged="[]"
-    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-        merged=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s '.' 2>/dev/null) || merged="[]"
-    fi
-    rm -rf "$tmp_dir"
-
+    local -a _links=()
+    mapfile -t _links <<< "$mirror_links"
+    local merged
+    merged=$(sdk_fanout _h4u_get_url_worker "${_links[@]}")
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
 }

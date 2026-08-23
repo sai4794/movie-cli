@@ -18,6 +18,7 @@ source "$LIB_DIR/init.sh"
 source "$LIB_DIR/errors.sh"
 source "$LIB_DIR/config.sh"
 source "$LIB_DIR/cache.sh"
+source "$LIB_DIR/json.sh"
 source "$LIB_DIR/ui.sh"
 source "$LIB_DIR/player.sh"
 source "$LIB_DIR/history.sh"
@@ -28,6 +29,24 @@ source "$LIB_DIR/update.sh"
 # ═══════════════════════════════════════════════════════════════
 PLUGIN_DIR="$SCRIPT_DIR/plugins"
 declare -A LOADED_PLUGINS=()
+
+# Run a plugin function under the shell-option state the host expects.
+#
+# Plugins historically call `set +euo pipefail` inside their Cinemeta
+# fallbacks. In all-plugin search that runs inside a throwaway subshell,
+# but in single-plugin paths it executes in THIS shell and permanently
+# disabled errexit/nounset/pipefail for everything afterwards — masking
+# real bugs downstream. The wrapper snapshots the option state, lets the
+# plugin run however it wants, then restores strict mode. Exit codes pass
+# through unchanged, so behavior is identical apart from the leak fix.
+run_plugin() {
+    local saved_opts
+    saved_opts=$(set +o)
+    local rc=0
+    "$@" || rc=$?
+    eval "$saved_opts"
+    return "$rc"
+}
 
 validate_plugin() {
     local file="$1"
@@ -108,13 +127,86 @@ sort_streams() {
 # Verify streams — real playback check (follow redirects + referer)
 # Args: $1=JSON array of stream objects
 # Returns filtered JSON with only streams mpv can actually play
-# ponytail: parallel verification — all streams checked concurrently
+# Parallel verification with bounded concurrency: every stream used to run
+# two curls at once, so a 60-stream episode fanned out to 120 sockets and
+# saturated slow links/CDN rate limits. Workers are capped instead.
+VERIFY_MAX_JOBS="${VERIFY_MAX_JOBS:-16}"
+
+# Probe one stream URL; on success write "$1/pass_$2" (index marker).
+# Runs inside its own subshell — exits don't affect the host shell.
+_verify_stream_probe() {
+    local tmp_verify="$1" idx="$2" url="$3"
+    local -a referer_arg=()
+    if [[ -n "${4:-}" && "${4:-}" != "null" ]]; then
+        referer_arg=(-H "Referer: ${4}")
+    elif [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
+        referer_arg=(-H "Referer: https://vidlink.pro/")
+    fi
+    local http_code hex
+    # Curl 1: get first 16 bytes for content check
+    # NOTE: plain GET (no Range) — mirrors mpv's request shape. Some
+    # workers.dev proxies serve the first 1024 bytes on a Range probe
+    # (206) but 403 the full-file GET mpv opens; verifying with Range
+    # let those pass and fail at playback.
+    # head -c 16 closes the pipe → curl gets SIGPIPE → bounded. Do NOT
+    # add --max-filesize here: it aborts pre-transfer on large
+    # Content-Length and returns empty hex.
+    hex=$(curl -s \
+        -L --connect-timeout 4 --max-time 8 \
+        "${referer_arg[@]}" \
+        "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
+    # Curl 2: get HTTP status code
+    # --max-filesize: some servers stream the whole file (fsl-buckets,
+    # googleusercontent). Curl aborts with rc 63 (or 28 on max-time)
+    # but STILL prints the received code — that is a live stream, and
+    # the first-bytes check above already validated it as video. Only
+    # a code of 000 (no response) or non-2xx fails.
+    http_code=$(curl -so /dev/null -w "%{http_code}" \
+        -L --connect-timeout 4 --max-time 8 --max-filesize 3145728 \
+        "${referer_arg[@]}" \
+        "$url" 2>/dev/null)
+    # Reject non-2xx responses (000 = connection failed / no response)
+    [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
+    # Reject empty hex (nothing returned)
+    [[ -z "$hex" ]] && exit 0
+    # Reject rate-limit / error text (Too many requests, etc.)
+    [[ "$hex" =~ ^546f6f20 ]] && exit 0
+    # Reject plain text error responses (not video)
+    [[ "$hex" =~ ^48545450 ]] && exit 0
+    # Reject JSON responses (error pages, API errors)
+    [[ "$hex" =~ ^7b ]] && exit 0
+    [[ "$hex" =~ ^5b ]] && exit 0
+    # Reject HTML — DOCTYPE is 3c21444f4354595045 (<!DOCTYPE)
+    [[ "$hex" =~ ^3c21444f4354595045 ]] && exit 0
+    # Reject HTML — <html is 3c68746d6c
+    [[ "$hex" =~ ^3c68746d6c ]] && exit 0
+    # Reject HTML — <? (processing instruction) is 3c3f
+    [[ "$hex" =~ ^3c3f ]] && exit 0
+    # Accept known video signatures (hex)
+    if [[ "$hex" =~ ^(234558544d3355|23455854494e46) ]]; then
+        # m3u8: #EXTM3U or #EXTINF
+        printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+    elif [[ "$hex" =~ (66747970) ]]; then
+        # MP4 (ftyp box)
+        printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+    elif [[ "$hex" =~ ^1a45dfa3 ]]; then
+        # Matroska/WebM
+        printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+    elif [[ "$hex" =~ ^47 ]]; then
+        # MPEG-TS (0x47 sync byte)
+        printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+    elif [[ "$hex" =~ ^464c56 ]]; then
+        # FLV
+        printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
+    fi
+}
+
 verify_streams() {
     local json="$1"
     [[ -z "$json" || "$json" == "[]" ]] && { printf '[]'; return; }
 
     local total
-    total=$(printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0)
+    total=$(json_count "$json")
 
     # Extract URLs + optional per-stream referers in a single jq call
     local tmp_verify
@@ -122,78 +214,19 @@ verify_streams() {
     printf '%s' "$json" | jq -r 'to_entries[] | "\(.key)\t\(.value.url // "")\t\(.value.referer // "")"' \
         2>/dev/null > "$tmp_verify/urls.tsv"
 
-    # ponytail: verify all streams in parallel — -L follows redirects like mpv
-    # Referer bypasses CDN 403 on Vidlink URLs and per-stream referer fields
-    # (e.g. hubcloud resolver chains where workers.dev CDNs hotlink-check)
-    local pids=()
+    # Verify streams concurrently (bounded pool): -L follows redirects like
+    # mpv. Referer bypasses CDN 403 on Vidlink URLs and per-stream referer
+    # fields (e.g. hubcloud resolver chains where workers.dev CDNs hotlink-check)
+    local pids=() running=0
     while IFS=$'\t' read -r idx url referer; do
         [[ -z "$url" ]] && continue
-        (
-            local referer_arg=()
-            if [[ -n "$referer" && "$referer" != "null" ]]; then
-                referer_arg=(-H "Referer: $referer")
-            elif [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
-                referer_arg=(-H "Referer: https://vidlink.pro/")
-            fi
-            local http_code hex
-            # Curl 1: get first 16 bytes for content check
-            # NOTE: plain GET (no Range) — mirrors mpv's request shape. Some
-            # workers.dev proxies serve the first 1024 bytes on a Range probe
-            # (206) but 403 the full-file GET mpv opens; verifying with Range
-            # let those pass and fail at playback.
-            # head -c 16 closes the pipe → curl gets SIGPIPE → bounded. Do NOT
-            # add --max-filesize here: it aborts pre-transfer on large
-            # Content-Length and returns empty hex.
-            hex=$(curl -s \
-                -L --connect-timeout 4 --max-time 8 \
-                "${referer_arg[@]}" \
-                "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
-            # Curl 2: get HTTP status code
-            # --max-filesize: some servers stream the whole file (fsl-buckets,
-            # googleusercontent). Curl aborts with rc 63 (or 28 on max-time)
-            # but STILL prints the received code — that is a live stream, and
-            # the first-bytes check above already validated it as video. Only
-            # a code of 000 (no response) or non-2xx fails.
-            http_code=$(curl -so /dev/null -w "%{http_code}" \
-                -L --connect-timeout 4 --max-time 8 --max-filesize 3145728 \
-                "${referer_arg[@]}" \
-                "$url" 2>/dev/null)
-            # Reject non-2xx responses (000 = connection failed / no response)
-            [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
-            # Reject empty hex (nothing returned)
-            [[ -z "$hex" ]] && exit 0
-            # Reject rate-limit / error text (Too many requests, etc.)
-            [[ "$hex" =~ ^546f6f20 ]] && exit 0
-            # Reject plain text error responses (not video)
-            [[ "$hex" =~ ^48545450 ]] && exit 0
-            # Reject JSON responses (error pages, API errors)
-            [[ "$hex" =~ ^7b ]] && exit 0
-            [[ "$hex" =~ ^5b ]] && exit 0
-            # Reject HTML — DOCTYPE is 3c21444f4354595045 (<!DOCTYPE)
-            [[ "$hex" =~ ^3c21444f4354595045 ]] && exit 0
-            # Reject HTML — <html is 3c68746d6c
-            [[ "$hex" =~ ^3c68746d6c ]] && exit 0
-            # Reject HTML — <? (processing instruction) is 3c3f
-            [[ "$hex" =~ ^3c3f ]] && exit 0
-            # Accept known video signatures (hex)
-            if [[ "$hex" =~ ^(234558544d3355|23455854494e46) ]]; then
-                # m3u8: #EXTM3U or #EXTINF
-                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
-            elif [[ "$hex" =~ (66747970) ]]; then
-                # MP4 (ftyp box)
-                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
-            elif [[ "$hex" =~ ^1a45dfa3 ]]; then
-                # Matroska/WebM
-                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
-            elif [[ "$hex" =~ ^47 ]]; then
-                # MPEG-TS (0x47 sync byte)
-                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
-            elif [[ "$hex" =~ ^464c56 ]]; then
-                # FLV
-                printf '%d\n' "$idx" > "$tmp_verify/pass_$idx"
-            fi
-        ) &
+        ( _verify_stream_probe "$tmp_verify" "$idx" "$url" "$referer" ) &
         pids+=($!)
+        if (( ++running >= VERIFY_MAX_JOBS )); then
+            wait "${pids[0]}" 2>/dev/null || true
+            pids=("${pids[@]:1}")
+            (( running-- ))
+        fi
     done < "$tmp_verify/urls.tsv"
 
     wait "${pids[@]}" 2>/dev/null || true
@@ -209,9 +242,9 @@ verify_streams() {
     result=$(printf '%s' "$json" | jq --argjson idx "$valid_indices" \
         '[to_entries[] | select(.key as $k | $idx | any(. == $k)) | .value]' 2>/dev/null) || result="[]"
 
-    local kept
-    kept=$(printf '%s' "$result" | jq 'length' 2>/dev/null || echo 0)
-    local dropped=$(( total - kept ))
+    local kept dropped
+    kept=$(json_count "$result")
+    dropped=$(( total - kept ))
     (( dropped > 0 )) && ui_info "Filtered $dropped dead stream(s), $kept working"
     printf '%s' "$result"
 }
@@ -224,6 +257,7 @@ verify_streams() {
 #   $3 = display label
 #   $4 = user-selected stream URL (played first; remaining tried in order)
 #   $5 = start_time for the first attempt (resume position; optional)
+#   $6 = quality for re-resolution (explicit — no caller-scope leakage)
 # Flow: play selected → on failure try next stream → if all fail, re-resolve
 # fresh (new tokens = new mirror set) → try once more → return 1 if still dead.
 # Returns 0 if anything played (mpv exit 0/130 = user quit/interrupt = success).
@@ -234,12 +268,13 @@ play_with_fallback() {
     local label="$3"
     local selected_url="$4"
     local start_time="${5:-}"
+    local quality="${6:-720}"
 
     local attempt=0
     while (( attempt < 2 )); do
         if (( attempt == 1 )); then
             ui_info "All mirrors failed — re-resolving fresh mirrors..."
-            streams_json=$(plugin_get_url "$resolve_id" "$quality" 2>/dev/null || printf '[]')
+            streams_json=$(run_plugin plugin_get_url "$resolve_id" "$quality" 2>/dev/null || printf '[]')
             streams_json=$(sort_streams "$streams_json")
             streams_json=$(verify_streams "$streams_json")
         fi
@@ -332,19 +367,47 @@ check_deps() {
 # ═══════════════════════════════════════════════════════════════
 # Search & Play Pipeline
 # ═══════════════════════════════════════════════════════════════
-search_and_play() {
-    local query="$1"
-    local plugin_name="$2"
-    local quality="$3"
 
-    prof_start "plugin_discovery"
-    discover_plugins
-    prof_end
+# Tag every result with the plugin that produced it (routing key for get_url).
+_tag_results() {
+    local results="$1" plugin="$2"
+    printf '%s' "$results" | jq --arg p "$plugin" 'map(.plugin = $p)' 2>/dev/null || printf '[]'
+}
 
-    local selected_plugin="${plugin_name:-${CONF_PLUGIN:-all}}"
-    if [[ "$selected_plugin" == "auto" ]]; then
-        selected_plugin="all"
+# Search all loaded plugins concurrently; each runs in its own subshell so a
+# plugin that dies or flips shell options cannot contaminate the host.
+_search_all_plugins() {
+    local query="$1" quality="$2"
+    local merged_results="[]"
+    local pids=() idx=0
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    for p_name in "${!LOADED_PLUGINS[@]}"; do
+        (
+            source "${LOADED_PLUGINS[$p_name]}"
+            local p_res
+            p_res=$(plugin_search "$query" "$quality" 2>/dev/null || printf '[]')
+            if [[ -n "$p_res" && "$p_res" != "[]" ]]; then
+                p_res=$(_tag_results "$p_res" "$p_name")
+            fi
+            printf '%s\n' "$p_res" > "$tmp_dir/out_${idx}.json"
+        ) &
+        pids+=($!)
+        idx=$((idx + 1))
+    done
+    wait "${pids[@]}" 2>/dev/null || true
+    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
+        merged_results=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s 'add' 2>/dev/null || printf '[]')
     fi
+    rm -rf "$tmp_dir"
+    printf '%s' "$merged_results"
+}
+
+# Resolve search results for query+plugin(+quality), honoring cache.
+# Prints the merged result JSON array to stdout; exits via die_plugin when
+# nothing was found (original behavior).
+_search_results() {
+    local query="$1" selected_plugin="$2" quality="$3"
 
     local results=""
     if [[ "$selected_plugin" == "all" ]]; then
@@ -355,29 +418,7 @@ search_and_play() {
         if [[ -z "$results" || "$results" == "[]" ]]; then
             prof_start "search"
             status_msg "Searching all plugins..."
-            local merged_results="[]"
-            local pids=() idx=0
-            local tmp_dir
-            tmp_dir=$(mktemp -d)
-            for p_name in "${!LOADED_PLUGINS[@]}"; do
-                (
-                    source "${LOADED_PLUGINS[$p_name]}"
-                    local p_res
-                    p_res=$(plugin_search "$query" "$quality" 2>/dev/null || printf '[]')
-                    if [[ -n "$p_res" && "$p_res" != "[]" ]]; then
-                        p_res=$(printf '%s' "$p_res" | jq --arg p "$p_name" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
-                    fi
-                    printf '%s\n' "$p_res" > "$tmp_dir/out_${idx}.json"
-                ) &
-                pids+=($!)
-                idx=$((idx + 1))
-            done
-            wait "${pids[@]}" 2>/dev/null || true
-            if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-                merged_results=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s 'add' 2>/dev/null || printf '[]')
-            fi
-            rm -rf "$tmp_dir"
-            results="$merged_results"
+            results=$(_search_all_plugins "$query" "$quality")
             spinner_stop
             [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
             [[ "${NO_CACHE:-0}" != "1" ]] && cache_set "$cache_key" "$results"
@@ -392,43 +433,80 @@ search_and_play() {
         fi
         if [[ -z "$results" ]]; then
             status_msg "Searching..."
-            results=$(plugin_search "$query" "$quality" || printf '[]')
+            # run_plugin: single-plugin search executes in THIS shell — keep
+            # any `set +euo pipefail` inside the plugin from leaking out.
+            results=$(run_plugin plugin_search "$query" "$quality" || printf '[]')
             spinner_stop
             [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
-            results=$(printf '%s' "$results" | jq --arg p "$selected_plugin" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
+            results=$(_tag_results "$results" "$selected_plugin")
             [[ "${NO_CACHE:-0}" != "1" ]] && cache_set "$cache_key" "$results"
         fi
     fi
+    printf '%s' "$results"
+}
+
+# plugin_get_url → sort → verify. The standard resolution pipeline used by
+# the series flow, retry loops, and --continue. Prints verified streams.
+resolve_streams_for() {
+    local id="$1" quality="$2"
+    local streams_json
+    streams_json=$(run_plugin plugin_get_url "$id" "$quality" 2>/dev/null)
+    streams_json=$(sort_streams "$streams_json")
+    streams_json=$(verify_streams "$streams_json")
+    printf '%s' "$streams_json"
+}
+
+# Collect stream objects from a JSON array into the _STREAMS global array.
+collect_streams() {
+    local json="$1"
+    _STREAMS=()
+    local obj
+    while IFS= read -r obj; do
+        [[ -n "$obj" ]] && _STREAMS+=("$obj")
+    done < <(json_objects "$json")
+}
+
+# Persist final playback position for --continue (no-op on zero/invalid).
+_save_playback_progress() {
+    local id="$1"
+    local end_pos
+    end_pos=$(get_mpv_position 2>/dev/null || echo 0)
+    (( end_pos > 0 )) && history_update_progress "$id" "$end_pos" "$end_pos" || true
+}
+
+search_and_play() {
+    local query="$1"
+    local plugin_name="$2"
+    local quality="$3"
+
+    prof_start "plugin_discovery"
+    discover_plugins
+    prof_end
+
+    local selected_plugin="${plugin_name:-${CONF_PLUGIN:-all}}"
+    if [[ "$selected_plugin" == "auto" ]]; then
+        selected_plugin="all"
+    fi
+
+    local results
+    results=$(_search_results "$query" "$selected_plugin" "$quality")
 
     local count
-    count=$(printf '%s' "$results" | jq 'length' 2>/dev/null || echo 0)
+    count=$(json_count "$results")
     ui_success "Found $count results"
     (( count == 0 )) && die_plugin "No results for: $query"
 
-    local -a titles=() ids=() types=() plugins=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && titles+=("$line")
-    done < <(printf '%s' "$results" | jq -r '.[].title' 2>/dev/null || true)
-
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && ids+=("$line")
-    done < <(printf '%s' "$results" | jq -r '.[].id' 2>/dev/null || true)
-
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && types+=("$line")
-    done < <(printf '%s' "$results" | jq -r '.[].type' 2>/dev/null || true)
-
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && plugins+=("$line")
-    done < <(printf '%s' "$results" | jq -r '.[].plugin' 2>/dev/null || true)
+    # One jq pass fills all four parallel arrays (was four jq forks).
+    local R_TITLE=() R_ID=() R_TYPE=() R_PLUGIN=()
+    json_fill_arrays "$results" R title id type plugin
 
     local -a display_titles=()
     local i=0
     while (( i < count )); do
         if [[ "$selected_plugin" == "all" ]]; then
-            display_titles+=("${titles[$i]} [${plugins[$i]}]")
+            display_titles+=("${R_TITLE[$i]} [${R_PLUGIN[$i]}]")
         else
-            display_titles+=("${titles[$i]}")
+            display_titles+=("${R_TITLE[$i]}")
         fi
         i=$((i + 1))
     done
@@ -444,12 +522,12 @@ search_and_play() {
         exit 0
     fi
 
-    local selected_display
+    local qualities_json  # shared by series/movie flows below
     # NAV LOOP: title -> [season -> [episode -> [stream]]]. "<- Back" walks
     # up one level; "no streams" sends the user back instead of exiting.
     while true; do
     select_item "Select: " "${display_titles[@]}" || exit 130
-    selected_display="$_SELECT_ITEM_RESULT"
+    local selected_display="$_SELECT_ITEM_RESULT"
     SELECT_N=""
     [[ "$selected_display" == "<- Back" ]] && { ui_info "Exiting."; exit 0; }
 
@@ -457,10 +535,10 @@ search_and_play() {
     i=0
     while (( i < count )); do
         if [[ "${display_titles[$i]}" == "$selected_display" ]]; then
-            selected_id="${ids[$i]}"
-            selected_type="${types[$i]:-movie}"
-            selected_plugin_match="${plugins[$i]}"
-            selected_title="${titles[$i]}"
+            selected_id="${R_ID[$i]}"
+            selected_type="${R_TYPE[$i]:-movie}"
+            selected_plugin_match="${R_PLUGIN[$i]}"
+            selected_title="${R_TITLE[$i]}"
             break
         fi
         i=$((i + 1))
@@ -480,7 +558,7 @@ search_and_play() {
         # 1. Get seasons
         status_msg "Fetching seasons..."
         local seasons
-        seasons=$(plugin_list_seasons "$selected_id" 2>/dev/null) || seasons="[]"
+        seasons=$(run_plugin plugin_list_seasons "$selected_id" 2>/dev/null) || seasons="[]"
         spinner_stop
 
         if [[ -z "$seasons" || "$seasons" == "[]" ]]; then
@@ -488,20 +566,10 @@ search_and_play() {
             continue   # back to title selection
         fi
 
-        local -a season_titles=() season_ids=() season_numbers=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && season_titles+=("$line")
-        done < <(printf '%s' "$seasons" | jq -r '.[].title' 2>/dev/null)
+        local S_TITLE=() S_ID=() S_NUMBER=()
+        json_fill_arrays "$seasons" S title id number
 
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && season_ids+=("$line")
-        done < <(printf '%s' "$seasons" | jq -r '.[].id' 2>/dev/null)
-
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && season_numbers+=("$line")
-        done < <(printf '%s' "$seasons" | jq -r '.[].number' 2>/dev/null)
-
-        local season_count=${#season_ids[@]}
+        local season_count=${#S_ID[@]}
         local selected_season_number="1"
 
         # 2..3. Season -> Episode inner loop: episode "<- Back" must land
@@ -511,18 +579,18 @@ search_and_play() {
             if (( season_count > 0 )); then
                 local selected_season_title
                 if (( season_count == 1 )); then
-                    selected_season_title="${season_titles[0]}"
+                    selected_season_title="${S_TITLE[0]}"
                 else
-                    select_item "Select season: " "${season_titles[@]}" "<- Back" || exit 130
+                    select_item "Select season: " "${S_TITLE[@]}" "<- Back" || exit 130
                     selected_season_title="$_SELECT_ITEM_RESULT"
                     [[ "$selected_season_title" == "<- Back" ]] && continue 2   # back to titles
                 fi
 
                 # Get the season number
                 local k=0
-                for t in "${season_titles[@]}"; do
+                for t in "${S_TITLE[@]}"; do
                     if [[ "$t" == "$selected_season_title" ]]; then
-                        selected_season_number="${season_numbers[$k]}"
+                        selected_season_number="${S_NUMBER[$k]}"
                         break
                     fi
                     (( ++k ))
@@ -532,186 +600,163 @@ search_and_play() {
             # 2. Get episodes
             status_msg "Fetching episodes..."
             local episodes
-            episodes=$(plugin_list_episodes "$selected_id" "$selected_season_number" 2>/dev/null) || episodes="[]"
+            episodes=$(run_plugin plugin_list_episodes "$selected_id" "$selected_season_number" 2>/dev/null) || episodes="[]"
             spinner_stop
 
-        local -a episode_titles=() episode_ids=() episode_seasons=() episode_numbers=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && episode_titles+=("$line")
-        done < <(printf '%s' "$episodes" | jq -r '.[].title' 2>/dev/null)
+            local E_TITLE=() E_ID=() E_SEASON=() E_EPISODE=()
+            json_fill_arrays "$episodes" E title id season episode
 
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && episode_ids+=("$line")
-        done < <(printf '%s' "$episodes" | jq -r '.[].id' 2>/dev/null)
-
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && episode_seasons+=("$line")
-        done < <(printf '%s' "$episodes" | jq -r '.[].season' 2>/dev/null)
-
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && episode_numbers+=("$line")
-        done < <(printf '%s' "$episodes" | jq -r '.[].episode' 2>/dev/null)
-
-        local ep_count=${#episode_ids[@]}
-        if (( ep_count == 0 )); then
-            ui_error "No episodes found for season $selected_season_number — pick another."
-            (( season_count > 1 )) && continue || continue 2
-        fi
-
-        # 3. Select episode (with Back → season selection)
-        local selected_episode_title
-        select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
-        selected_episode_title="$_SELECT_ITEM_RESULT"
-        # "<- Back": multi-season → season menu; single-season → titles
-        # (there is no season menu to return to — otherwise Back loops
-        # straight back into the same episode list forever).
-        if [[ "$selected_episode_title" == "<- Back" ]]; then
-            if (( season_count > 1 )); then
-                continue
-            else
-                continue 2
-            fi
-        fi
-
-        local ep_idx=""
-        local k=0
-        for t in "${episode_titles[@]}"; do
-            if [[ "$t" == "$selected_episode_title" ]]; then
-                ep_idx=$k
-                break
-            fi
-            (( ++k ))
-        done
-        [[ -n "$ep_idx" ]] || die_plugin "No episode index found"
-
-        # 4. Playback loop
-        while true; do
-            local ep_title="${episode_titles[$ep_idx]}"
-            local ep_id="${episode_ids[$ep_idx]}"
-            local ep_num="${episode_numbers[$ep_idx]}"
-            local ep_season="${episode_seasons[$ep_idx]}"
-
-            # Clear screen before resolving streams
-            clear 2>/dev/null || true
-
-            status_msg "Resolving streams..."
-             qualities_json=$(plugin_get_url "$ep_id" "$quality" 2>/dev/null)
-             qualities_json=$(sort_streams "$qualities_json")
-             qualities_json=$(verify_streams "$qualities_json")
-                         spinner_stop
-            if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]]; then
-                ui_error "No streams for: $selected_title - $ep_title"
-                local back_choice
-                select_item "What next? " "<- Back to episodes" "Try again" || continue
-                back_choice="$_SELECT_ITEM_RESULT"
-                [[ "$back_choice" == "Try again" ]] && continue
-                break   # Back to episodes
+            local ep_count=${#E_ID[@]}
+            if (( ep_count == 0 )); then
+                ui_error "No episodes found for season $selected_season_number — pick another."
+                (( season_count > 1 )) && continue || continue 2
             fi
 
-            # Stream selection for series episodes
-            local -a ep_streams=()
-            while IFS= read -r obj; do
-                [[ -n "$obj" ]] && ep_streams+=("$obj")
-            done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
-
-            (( ${#ep_streams[@]} == 0 )) && { ui_error "No streams for: $selected_title - $ep_title"; break; }
-
-            local selected_stream
-            select_stream "Select stream (or <- Back): " "${ep_streams[@]}" "<- Back" || die_plugin "No stream selected"
-            selected_stream="$_SELECT_ITEM_RESULT"
-            if [[ "$selected_stream" == "<- Back" ]]; then
-                break   # back to episode selection
-            fi
-
-            local selected_url
-            selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
-            [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
-
-            history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
-            status_msg "Playing: $selected_title - $ep_title (S${ep_season}E${ep_num})"
-
-            # Auto next-mirror: on playback failure try remaining streams, then
-            # re-resolve fresh once (CloudStream behavior)
-            if ! play_with_fallback "$qualities_json" "$ep_id" "$selected_title - $ep_title (S${ep_season}E${ep_num})" "$selected_url"; then
-                die_plugin "No playable streams for: $selected_title - $ep_title"
-            fi
-            # ponytail: save final position for --continue
-            local end_pos
-            end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-            (( end_pos > 0 )) && history_update_progress "$ep_id" "$end_pos" "$end_pos" || true
-
-            # Clear screen to wipe player output and print clean menu
-            clear 2>/dev/null || true
-
-            # Prompt choices
-            local options=("next" "replay" "previous" "select" "change quality" "quit")
-            local choice
-            select_item "Select option: " "${options[@]}" || choice="quit"
-            choice="$_SELECT_ITEM_RESULT"
-
-            case "$choice" in
-                next)
-                    if (( ep_idx + 1 < ep_count )); then
-                        ep_idx=$((ep_idx + 1))
-                    else
-                        ui_info "No more episodes in this season."
-                    fi
-                    ;;
-                previous)
-                    if (( ep_idx > 0 )); then
-                        ep_idx=$((ep_idx - 1))
-                    else
-                        ui_info "Already at the first episode."
-                    fi
-                    ;;
-                replay)
-                    # Replays current ep_idx
-                    ;;
-                select)
-                    local new_ep_title
-                    # "<- Back" → leave the playback loop; the code after it
-                    # branches to seasons (multi) or titles (single).
-                    # NOTE: 'continue' here would restart the PLAYBACK loop
-                    # (re-resolving streams) — wrong direction.
-                    select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
-                    new_ep_title="$_SELECT_ITEM_RESULT"
-                    [[ "$new_ep_title" == "<- Back" ]] && break
-                    local m=0
-                    for t in "${episode_titles[@]}"; do
-                        if [[ "$t" == "$new_ep_title" ]]; then
-                            ep_idx=$m
-                            break
-                        fi
-                        (( ++m ))
-                    done
-                    ;;
-                "change quality")
-                    local changed_stream
-                    select_stream "Select quality: " "${ep_streams[@]}" "<- Back" || continue
-                    changed_stream="$_SELECT_ITEM_RESULT"
-                    # "<- Back" → back to the playback menu (not re-resolve)
-                    [[ "$changed_stream" == "<- Back" ]] && continue
-                    quality=$(printf '%s' "$changed_stream" | jq -r '.quality // "auto"' 2>/dev/null)
-                    ;;
-                quit)
-                    break
-                    ;;
-            esac
-        done   # end playback loop
+            # 3. Select episode (with Back → season selection)
+            local selected_episode_title
+            select_item "Select episode: " "${E_TITLE[@]}" "<- Back" || exit 130
+            selected_episode_title="$_SELECT_ITEM_RESULT"
+            # "<- Back": multi-season → season menu; single-season → titles
+            # (there is no season menu to return to — otherwise Back loops
+            # straight back into the same episode list forever).
+            if [[ "$selected_episode_title" == "<- Back" ]]; then
                 if (( season_count > 1 )); then
-                    continue   # back to SEASON selection (inner loop top)
+                    continue
                 else
-                    continue 2   # single season: no menu to return to → titles
+                    continue 2
                 fi
-            done   # end season/episode inner loop
-            exit 0
-fi
+            fi
+
+            local ep_idx=""
+            local k=0
+            for t in "${E_TITLE[@]}"; do
+                if [[ "$t" == "$selected_episode_title" ]]; then
+                    ep_idx=$k
+                    break
+                fi
+                (( ++k ))
+            done
+            [[ -n "$ep_idx" ]] || die_plugin "No episode index found"
+
+            # 4. Playback loop
+            while true; do
+                local ep_title="${E_TITLE[$ep_idx]}"
+                local ep_id="${E_ID[$ep_idx]}"
+                local ep_num="${E_EPISODE[$ep_idx]}"
+                local ep_season="${E_SEASON[$ep_idx]}"
+
+                # Clear screen before resolving streams
+                clear 2>/dev/null || true
+
+                status_msg "Resolving streams..."
+                qualities_json=$(resolve_streams_for "$ep_id" "$quality")
+                spinner_stop
+                if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]]; then
+                    ui_error "No streams for: $selected_title - $ep_title"
+                    local back_choice
+                    select_item "What next? " "<- Back to episodes" "Try again" || continue
+                    back_choice="$_SELECT_ITEM_RESULT"
+                    [[ "$back_choice" == "Try again" ]] && continue
+                    break   # Back to episodes
+                fi
+
+                # Stream selection for series episodes
+                collect_streams "$qualities_json"
+                (( ${#_STREAMS[@]} == 0 )) && { ui_error "No streams for: $selected_title - $ep_title"; break; }
+
+                local selected_stream
+                select_stream "Select stream (or <- Back): " "${_STREAMS[@]}" "<- Back" || die_plugin "No stream selected"
+                selected_stream="$_SELECT_ITEM_RESULT"
+                if [[ "$selected_stream" == "<- Back" ]]; then
+                    break   # back to episode selection
+                fi
+
+                local selected_url
+                selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+                [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
+
+                history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
+                status_msg "Playing: $selected_title - $ep_title (S${ep_season}E${ep_num})"
+
+                # Auto next-mirror: on playback failure try remaining streams, then
+                # re-resolve fresh once (CloudStream behavior)
+                if ! play_with_fallback "$qualities_json" "$ep_id" "$selected_title - $ep_title (S${ep_season}E${ep_num})" "$selected_url" "" "$quality"; then
+                    die_plugin "No playable streams for: $selected_title - $ep_title"
+                fi
+                # ponytail: save final position for --continue
+                _save_playback_progress "$ep_id"
+
+                # Clear screen to wipe player output and print clean menu
+                clear 2>/dev/null || true
+
+                # Prompt choices
+                local options=("next" "replay" "previous" "select" "change quality" "quit")
+                local choice
+                select_item "Select option: " "${options[@]}" || choice="quit"
+                choice="$_SELECT_ITEM_RESULT"
+
+                case "$choice" in
+                    next)
+                        if (( ep_idx + 1 < ep_count )); then
+                            ep_idx=$((ep_idx + 1))
+                        else
+                            ui_info "No more episodes in this season."
+                        fi
+                        ;;
+                    previous)
+                        if (( ep_idx > 0 )); then
+                            ep_idx=$((ep_idx - 1))
+                        else
+                            ui_info "Already at the first episode."
+                        fi
+                        ;;
+                    replay)
+                        # Replays current ep_idx
+                        ;;
+                    select)
+                        local new_ep_title
+                        # "<- Back" → leave the playback loop; the code after it
+                        # branches to seasons (multi) or titles (single).
+                        # NOTE: 'continue' here would restart the PLAYBACK loop
+                        # (re-resolving streams) — wrong direction.
+                        select_item "Select episode: " "${E_TITLE[@]}" "<- Back" || exit 130
+                        new_ep_title="$_SELECT_ITEM_RESULT"
+                        [[ "$new_ep_title" == "<- Back" ]] && break
+                        local m=0
+                        for t in "${E_TITLE[@]}"; do
+                            if [[ "$t" == "$new_ep_title" ]]; then
+                                ep_idx=$m
+                                break
+                            fi
+                            (( ++m ))
+                        done
+                        ;;
+                    "change quality")
+                        local changed_stream
+                        select_stream "Select quality: " "${_STREAMS[@]}" "<- Back" || continue
+                        changed_stream="$_SELECT_ITEM_RESULT"
+                        # "<- Back" → back to the playback menu (not re-resolve)
+                        [[ "$changed_stream" == "<- Back" ]] && continue
+                        quality=$(printf '%s' "$changed_stream" | jq -r '.quality // "auto"' 2>/dev/null)
+                        ;;
+                    quit)
+                        break
+                        ;;
+                esac
+            done   # end playback loop
+            if (( season_count > 1 )); then
+                continue   # back to SEASON selection (inner loop top)
+            else
+                continue 2   # single season: no menu to return to → titles
+            fi
+        done   # end season/episode inner loop
+        exit 0
+    fi
 
     # Movie playback flow
     status_msg "Resolving streams..."
     prof_start "stream_resolution"
-    local qualities_json
-    qualities_json=$(plugin_get_url "$selected_id" "$quality" 2>/dev/null)
+    qualities_json=$(run_plugin plugin_get_url "$selected_id" "$quality" 2>/dev/null)
     if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] || [[ "$(printf '%s' "$qualities_json" | verify_streams 2>/dev/null)" == "[]" ]]; then
         qualities_json=$(verify_streams "$(sort_streams "$qualities_json")" 2>/dev/null)
     fi
@@ -720,31 +765,22 @@ fi
     spinner_stop
 
     # No streams → offer retry / back to title selection instead of exiting
-    local -a streams=()
-    collect_movie_streams() {
-        streams=()
-        while IFS= read -r obj; do
-            [[ -n "$obj" ]] && streams+=("$obj")
-        done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
-    }
-    collect_movie_streams
-    while (( ${#streams[@]} == 0 )); do
+    collect_streams "$qualities_json"
+    while (( ${#_STREAMS[@]} == 0 )); do
         ui_error "No streams found for: $selected_title"
         local mv_choice
         select_item "What next? " "Try again" "<- Back to search results" || exit 130
         mv_choice="$_SELECT_ITEM_RESULT"
         [[ "$mv_choice" == "<- Back to search results" ]] && { MOVIE_BACK=1; break; }
         status_msg "Resolving streams... (retry)"
-        qualities_json=$(plugin_get_url "$selected_id" "$quality" 2>/dev/null)
-        qualities_json=$(sort_streams "$qualities_json")
-        qualities_json=$(verify_streams "$qualities_json")
-        collect_movie_streams
+        qualities_json=$(resolve_streams_for "$selected_id" "$quality")
+        collect_streams "$qualities_json"
     done
     [[ "${MOVIE_BACK:-0}" == "1" ]] && { unset MOVIE_BACK; continue; }
 
     # Select stream (auto-plays if only one)
     local selected_stream
-    select_stream "Select stream (or <- Back): " "${streams[@]}" "<- Back" || die_plugin "No stream selected"
+    select_stream "Select stream (or <- Back): " "${_STREAMS[@]}" "<- Back" || die_plugin "No stream selected"
     selected_stream="$_SELECT_ITEM_RESULT"
     [[ "$selected_stream" == "<- Back" ]] && continue
 
@@ -756,14 +792,12 @@ fi
     prof_start "player_launch"
     # Auto next-mirror: on playback failure try remaining streams, then
     # re-resolve fresh once (CloudStream behavior)
-    if ! play_with_fallback "$qualities_json" "$selected_id" "$selected_title" "$selected_url"; then
+    if ! play_with_fallback "$qualities_json" "$selected_id" "$selected_title" "$selected_url" "" "$quality"; then
         die_plugin "No playable streams for: $selected_title"
     fi
     prof_end
     # ponytail: save final position for --continue
-    local end_pos
-    end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-    (( end_pos > 0 )) && history_update_progress "$selected_id" "$end_pos" "$end_pos" || true
+    _save_playback_progress "$selected_id"
     done   # end of title-selection NAV LOOP (movie path: play → exit; series: exits after loop)
 }
 
@@ -859,21 +893,15 @@ main() {
 
         status_msg "Resolving streams..."
         local qualities_json
-        qualities_json=$(plugin_get_url "$resume_id" "$quality")
-        qualities_json=$(sort_streams "$qualities_json")
-        qualities_json=$(verify_streams "$qualities_json")
+        qualities_json=$(resolve_streams_for "$resume_id" "$quality")
         spinner_stop
         [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for last watched entry"
 
-        local -a streams=()
-        while IFS= read -r obj; do
-            [[ -n "$obj" ]] && streams+=("$obj")
-        done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
-
-        (( ${#streams[@]} == 0 )) && die_plugin "No streams available"
+        collect_streams "$qualities_json"
+        (( ${#_STREAMS[@]} == 0 )) && die_plugin "No streams available"
 
         local selected_stream
-        select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
+        select_stream "Select stream: " "${_STREAMS[@]}" || die_plugin "No stream selected"
         selected_stream="$_SELECT_ITEM_RESULT"
 
         local selected_url
@@ -886,13 +914,11 @@ main() {
         status_msg "Resuming: $(printf '%s' "$last_entry" | jq -r '.title')"
         # Auto next-mirror: on playback failure try remaining streams, then
         # re-resolve fresh once (CloudStream behavior)
-        if ! play_with_fallback "$qualities_json" "$resume_id" "$(printf '%s' "$last_entry" | jq -r '.title')" "$selected_url" "$start_time"; then
+        if ! play_with_fallback "$qualities_json" "$resume_id" "$(printf '%s' "$last_entry" | jq -r '.title')" "$selected_url" "$start_time" "$quality"; then
             die_plugin "No playable streams for last watched entry"
         fi
         # ponytail: save position for next --continue
-        local end_pos
-        end_pos=$(get_mpv_position 2>/dev/null || echo 0)
-        (( end_pos > 0 )) && history_update_progress "$last_id" "$end_pos" "$end_pos" || true
+        _save_playback_progress "$last_id"
         exit 0
     fi
 

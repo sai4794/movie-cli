@@ -5,6 +5,9 @@
 # gdflix buttons → resolver (sportverse/gamerxyt hubcloud.php) → direct links
 # Reference: phisher98 CloudStream extension "Movies4u" (v11), decompiled.
 
+[[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
+[[ -f "${LIB_DIR:-}/cinemeta.sh" ]] && source "${LIB_DIR}/cinemeta.sh"
+
 # ═══════════════════════════════════════════════════════════════
 # Plugin Metadata
 # ═══════════════════════════════════════════════════════════════
@@ -27,97 +30,39 @@ _M4U_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/tvvvv/refs/heads/m
 _M4U_DOMAINS_CACHE_KEY="movies4u_domains"
 _M4U_BASE_USER_SET=0
 
+# Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh)
+_M4U_REJECT_GLOBS='*tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hubcloud.cx/video*|*googlesyndication*|*winexch*|*effectivecpm*|*profitableratecpm*|*a-ads*|*khelostar*|*drivebot*|*filesgram*|*tgredirect*|*multiup*|*royaljeet*|*bit.ly*'
+_M4U_FAMILY_GLOBS='*workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*|*gdlink*|*filepress*|*gofile*|*d0000d*|*drop.download*|*dood*|*driveapp*|*gdtot*|*gpdl*|*filesdl*'
+# Resolver pixel routing is per-site data: Movies4u routes ANY *gpdl* link
+# to the redirector resolver, not just gpdl.hubcloud.cx.
+_M4U_PIXEL_GLOBS='*pixel.hubcloud.cx*|*gpdl*'
+
 _load_m4u_config() {
-    local conf_file="$CONF_DIR/movies4u.conf"
-    [[ -f "$conf_file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        local key="${line%%=*}"
-        local value="${line#*=}"
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-        [[ -z "$key" ]] && continue
-        case "$key" in
-            BASE_URL) _M4U_BASE="$value"; _M4U_BASE_USER_SET=1 ;;
-            ALLOW_HOSTS) _M4U_ALLOW_HOSTS="$value" ;;
-        esac
-    done < "$conf_file"
+    sdk_conf_load "$CONF_DIR/movies4u.conf" M4U BASE_URL ALLOW_HOSTS
+    [[ -n "${M4U_BASE_URL+x}" && -n "${M4U_BASE_URL}" ]] && { _M4U_BASE="$M4U_BASE_URL"; _M4U_BASE_USER_SET=1; }
+    [[ -n "${M4U_ALLOW_HOSTS+x}" ]] && _M4U_ALLOW_HOSTS="$M4U_ALLOW_HOSTS"
 }
 
 # Auto domain rotation — same source the phisher CloudStream extensions use
 _m4u_load_domains() {
     [[ "$_M4U_BASE_USER_SET" == "1" ]] && return 0
-    local cached=""
-    if declare -f cache_get >/dev/null 2>&1; then
-        cached=$(cache_get "$_M4U_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
-    fi
-    if [[ -z "$cached" ]]; then
-        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_M4U_UA" "$_M4U_DOMAINS_URL" 2>/dev/null || true)
-        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
-            if declare -f cache_set >/dev/null 2>&1; then
-                cache_set "$_M4U_DOMAINS_CACHE_KEY" "$cached" || true
-            fi
-        else
-            cached=""
-        fi
-    fi
-    [[ -z "$cached" ]] && return 0
     local dom
-    dom=$(printf '%s' "$cached" | jq -r '.["movies4u"] // empty' 2>/dev/null || true)
-    [[ -z "$dom" || "$dom" == "null" ]] && return 0
-    dom="${dom%/}"
-    dom="${dom## }"
-    if [[ "$dom" != "$_M4U_BASE" ]]; then
-        debug "Movies4u domain rotated: $_M4U_BASE → $dom"
-        _M4U_BASE="$dom"
-    fi
+    dom=$(sdk_rotate_domain "$_M4U_DOMAINS_CACHE_KEY" "$_M4U_DOMAINS_URL" \
+        "movies4u" "$_M4U_BASE" "Movies4u" "$_M4U_UA") || return 0
+    [[ -z "$dom" ]] && return 0
+    _M4U_BASE="$dom"
 }
 
 # ═══════════════════════════════════════════════════════════════
 # Stream candidate policy (same philosophy as dudefilms/hdhub4u)
 # ═══════════════════════════════════════════════════════════════
 _m4u_is_stream_candidate() {
-    local link="$1"
-    local lower
-    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # Hard rejects — never streams
-    case "$lower" in
-        *tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hubcloud.cx/video*|*googlesyndication*|*winexch*|*effectivecpm*|*profitableratecpm*|*a-ads*|*khelostar*|*drivebot*|*filesgram*|*tgredirect*|*multiup*|*royaljeet*|*bit.ly*)
-            return 1 ;;
-    esac
-
-    if [[ -n "$_M4U_ALLOW_HOSTS" ]]; then
-        local host allow
-        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
-        local -a allow_arr=()
-        IFS=',' read -r -a allow_arr <<< "$_M4U_ALLOW_HOSTS"
-        for allow in "${allow_arr[@]}"; do
-            allow="${allow,,}"
-            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
-        done
-    fi
-
-    case "$lower" in
-        *workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*|*gdlink*|*filepress*|*gofile*|*d0000d*|*drop.download*|*dood*|*driveapp*|*gdtot*|*gpdl*|*filesdl*)
-            return 0 ;;
-    esac
-
-    case "$lower" in
-        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
-            return 0 ;;
-    esac
-
-    return 1
+    sdk_is_stream_candidate "$1" "$_M4U_ALLOW_HOSTS" "$_M4U_REJECT_GLOBS" "$_M4U_FAMILY_GLOBS"
 }
 
+# NOTE: kept plugin-local on purpose — this ladder emits bare-number labels
+# ("1080", "4K") unlike the SDK flavors, and quality strings surface
+# verbatim in stream-selection labels.
 _m4u_quality() {
     local url="$1"
     local lower
@@ -134,94 +79,14 @@ _m4u_quality() {
 }
 
 _m4u_stream_json() {
-    local url="$1"
-    local referer="${2:-}"
-    local qual
-    qual=$(_m4u_quality "$url")
-    if [[ -n "$referer" ]]; then
-        jq -nc --arg u "$url" --arg q "$qual" --arg r "$referer" '{quality: $q, url: $u, size: "unknown", provider: "movies4u", referer: $r}'
-    else
-        jq -nc --arg u "$url" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "movies4u"}'
-    fi
+    # Movies4u URLs are used verbatim (no percent-encoding), matching CSX.
+    local url="$1" referer="${2:-}"
+    sdk_stream_json "movies4u" "$(_m4u_quality "$url")" "$url" "$referer"
 }
 
 # ═══════════════════════════════════════════════════════════════
-# Resolvers
+# Resolvers (SDK-backed: pixel/drive/resolver walks are shared code)
 # ═══════════════════════════════════════════════════════════════
-
-# Last hop: resolver page (sportverse/gamerxyt hubcloud.php) → direct links.
-# Resolver pages list a.btn hrefs; keep stream candidates, resolve pixel
-# redirectors, drop gates (tg/go, bit.ly, ads).
-_m4u_resolve_resolver() {
-    local resolver_url="$1"
-    local page
-    page=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" "$resolver_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    printf '%s' "$page" | grep -oE '<a[^>]*href="https?://[^"]+"' | \
-        sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        case "$link" in
-            *pixel.hubcloud.cx*|*gpdl*)
-                _m4u_resolve_pixel "$link"
-                ;;
-            *pixeldrain*)
-                if [[ "$link" == *"/api/file/"* || "$link" == *"download"* ]]; then
-                    printf '%s\n' "$link"
-                else
-                    local pd_base pd_id
-                    pd_base=$(printf '%s' "$link" | sed -E 's|^(https?://[^/]+).*|\1|')
-                    pd_id="${link##*/}"
-                    printf '%s\n' "${pd_base}/api/file/${pd_id}?download"
-                fi
-                ;;
-            *)
-                if _m4u_is_stream_candidate "$link"; then
-                    printf '%s\n' "$link"
-                fi
-                ;;
-        esac
-    done
-}
-
-# pixel/gpdl redirector → real link (dl.php?link= extraction)
-_m4u_resolve_pixel() {
-    local pixel_url="$1"
-    local page dl_url final url_eff tmpbody
-    tmpbody=$(mktemp)
-    page=$(curl "${_M4U_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
-    url_eff="$page"
-    page=$(cat "$tmpbody" 2>/dev/null || true)
-    rm -f "$tmpbody"
-    dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^" ]*dl\.php\?link=[^" ]+' | head -1 2>/dev/null || true)
-    if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
-        dl_url="$url_eff"
-    fi
-    [[ -z "$dl_url" ]] && return 1
-    final=$(printf '%s' "$dl_url" | sed -E 's/.*link=//' | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))' 2>/dev/null || true)
-    [[ -z "$final" ]] && return 1
-    printf '%s\n' "$final"
-}
-
-# hubcloud drive page → id="download" href (resolver) → direct links
-_m4u_resolve_drive() {
-    local drive_url="$1"
-    local page href base
-    page=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" "$drive_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    if [[ "$drive_url" == *"hubcloud.php"* ]]; then
-        href="$drive_url"
-    else
-        href=$(printf '%s' "$page" | grep -oE 'id="download" href="[^"]+"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
-        [[ -z "$href" ]] && return 1
-        if [[ "$href" != http* ]]; then
-            base=$(printf '%s' "$drive_url" | sed -E 's|^(https?://[^/]+).*|\1|')
-            href="${base}/${href#/}"
-        fi
-    fi
-    _m4u_resolve_resolver "$href"
-}
 
 # hubcloud video page → resolver href (sportverse hubcloud.php) → direct links
 _m4u_resolve_video() {
@@ -231,7 +96,8 @@ _m4u_resolve_video() {
     [[ -z "$page" ]] && return 1
     href=$(printf '%s' "$page" | grep -oE 'href="https?://[^"]*hubcloud\.php[^"]*"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
     [[ -z "$href" ]] && return 1
-    _m4u_resolve_resolver "$href"
+    # Resolver pages accept ALL anchors (btn_only=0) on this site.
+    sdk_resolve_resolver "$href" _m4u_is_stream_candidate 0 "$_M4U_PIXEL_GLOBS" "${_M4U_BASE}/"
 }
 
 # gdlink.dev/file/ID → Instant DL (busycdn) direct link; gates dropped.
@@ -260,7 +126,7 @@ _m4u_resolve_gdflix() {
 #   hubcloud video + filebee + gdlink buttons.
 # Series layout: <h5>-:Episodes: N:-</h5> + div.downloads-btns-div with
 #   hubcloud drive + gdflix buttons.
-# Args: url, want_episode ("" for all/movie), want_season_ep (unused)
+# Args: url, want_episode ("" for all/movie)
 _m4u_resolve_m4ulinks() {
     local url="$1"
     local want_ep="${2:-}"
@@ -334,7 +200,20 @@ plugin_search() {
     [[ -z "$html" ]] && return 1
 
     local wp_results
-    wp_results=$(printf '%s' "$html" | python3 -c '
+    wp_results=$(_m4u_parse_wp_search_page "$html" "$query")
+
+    # Cinemeta fallback (shared orchestrator): when the WP site search
+    # returns sparse results, query Cinemeta for canonical titles and
+    # re-search this site by title+year (CSX CineStream Movies4u behavior).
+    cinemeta_search_fallback "$query" "$wp_results" _m4u_research_site
+}
+
+# WP search-page parser with relevance filter. WordPress falls back to a
+# recent-posts grid when a query matches nothing — those unrelated rows
+# must not surface. Kept only if the full normalized query is a substring
+# of the normalized title, or every significant token matches whole-word.
+_m4u_parse_wp_search_page() {
+    printf '%s' "$1" | python3 -c '
 import sys, re, html as h
 page = sys.stdin.read()
 query = sys.argv[1].lower()
@@ -383,40 +262,18 @@ for o in out:
         seen.add(o["id"])
         dedup.append(o)
 print(__import__("json").dumps(dedup))
-' "$query" 2>/dev/null || printf '[]')
+' "$2" 2>/dev/null || printf '[]'
+}
 
-    # Cinemeta fallback: when WP site search returns sparse results,
-    # query Cinemeta for fuzzy title matches and search the site by
-    # Cinemeta title+year (matches CSX CineStream Movies4u behavior).
-    # set +euo pipefail is scoped to this function's subshell context.
-    set +euo pipefail
-    local cm_count
-    cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
-    if [[ "$cm_count" -lt 2 ]]; then
-        local cm_movie cm_series cm_all
-        cm_movie=$(curl -s --connect-timeout 6 --max-time 15 \
-            "https://v3-cinemeta.strem.io/catalog/movie/top/search=$(urlencode "$query").json" 2>/dev/null || true)
-        cm_series=$(curl -s --connect-timeout 6 --max-time 15 \
-            "https://v3-cinemeta.strem.io/catalog/series/top/search=$(urlencode "$query").json" 2>/dev/null || true)
-        cm_all=$(printf '%s\n%s' "$cm_movie" "$cm_series" | jq -s \
-            '[.[]?.metas[]? | {name, releaseInfo, type}] | .[0:3]' 2>/dev/null || true)
-        if [[ -n "$cm_all" && "$cm_all" != "null" && "$cm_all" != "[]" ]]; then
-            local cm_tmp cm_rows
-            cm_tmp=$(mktemp)
-            # Do NOT init with echo "[]" — start empty to avoid jq merging [] as string
-            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
-            while IFS= read -r meta; do
-                [[ -z "$meta" ]] && continue
-                local cname cyear ctype
-                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
-                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
-                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
-                [[ -z "$cname" ]] && continue
-                local site_html
-                site_html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" \
-                    --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
-                [[ -z "$site_html" ]] && continue
-                printf '%s' "$site_html" | python3 -c "
+# Cinemeta research callback: search THIS site by canonical title+year.
+# Prints line-delimited JSON objects (the orchestrator merges/dedupes).
+_m4u_research_site() {
+    local cname="$1" cyear="$2" ctype="${3:-movie}"
+    local site_html
+    site_html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" \
+        --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
+    [[ -z "$site_html" ]] && return 0
+    printf '%s' "$site_html" | python3 -c "
 import sys, re, html as h, json
 page = sys.stdin.read()
 ctitle, cyear, ctype = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -435,27 +292,52 @@ for m in re.finditer(r'<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,15
         ct = re.sub(r'\s*(4K|[0-9]+p)\s*.*$','',ct,flags=re.I)
         ct = re.sub(r'\s+',' ',ct).strip(' -|\u2013')
         print(json.dumps({'id':slug,'title':ct,'type':ctype,'year':year or cyear,'rating':None,'poster':None}))
-" "$cname" "$cyear" "$ctype" 2>/dev/null | while IFS= read -r j; do
-                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
-                done
-            done <<< "$cm_rows"
-            # Merge: wp_results is JSON array, tmp has line-delimited JSON objects
-            local cm_merged
-            if [[ -s "$cm_tmp" ]]; then
-                cm_merged=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
-                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
-                    || printf '%s' "$wp_results")
-            else
-                cm_merged="$wp_results"
-            fi
-            rm -f "$cm_tmp"
-            printf '%s' "$cm_merged"
-        else
-            printf '%s' "$wp_results"
+" "$cname" "$cyear" "$ctype" 2>/dev/null || true
+}
+
+# Fan-out worker: resolve ONE m4ulinks page into stream JSON objects.
+_m4u_get_url_worker() {
+    local link="$1"
+    local ep_target="${M4U_WORKER_EPISODE:-}"
+    local btns
+    btns=$(_m4u_resolve_m4ulinks "$link" "$ep_target") || return 0
+    [[ -z "$btns" ]] && return 0
+
+    local b su
+    while IFS= read -r b; do
+        [[ -z "$b" ]] && continue
+        case "$b" in
+            *hubcloud.cx/video*|*hubcloud.*/video*|*vcloud.*)
+                _m4u_resolve_video "$b"
+                ;;
+            *hubcloud*|*hubdrive*)
+                sdk_resolve_drive "$b" _m4u_is_stream_candidate 0 "$_M4U_PIXEL_GLOBS" "${_M4U_BASE}/"
+                ;;
+            *gdlink*|*gdflix*)
+                _m4u_resolve_gdflix "$b"
+                ;;
+            *)
+                if _m4u_is_stream_candidate "$b"; then
+                    printf '%s\n' "$b"
+                fi
+                ;;
+        esac
+    done <<< "$btns" | while IFS= read -r su; do
+        [[ -z "$su" ]] && continue
+        [[ "${su,,}" == *sample* ]] && continue
+        # googleusercontent download pages are not playable streams
+        [[ "${su,,}" == *video-downloads.googleusercontent* ]] && continue
+        # pixeldrain page URL → direct file API
+        if [[ "$su" == *pixeldrain* ]]; then
+            su=$(sdk_normalize_pixeldrain "$su")
         fi
-    else
-        printf '%s' "$wp_results"
-    fi
+        # workers.dev hotlink-check needs Referer from sportverse.cc
+        if [[ "$su" == *"workers.dev"* ]]; then
+            _m4u_stream_json "$su" "https://sportverse.cc/"
+        else
+            _m4u_stream_json "$su"
+        fi
+    done
 }
 
 plugin_get_url() {
@@ -477,12 +359,11 @@ plugin_get_url() {
     html=$(curl "${_M4U_CURL[@]}" "$detail_url" 2>/dev/null) || die_network "Movies4u detail page fetch failed"
     [[ -z "$html" ]] && die_plugin "Empty Movies4u detail page"
 
-    # m4ulinks numbers on the post page
-    # BUG FIX: must position-walk season headings and assign each m4ulinks
-    # number to its nearest preceding "Season N" heading. Without this,
-    # episode 1 gets resolved from ALL seasons' m4ulinks pages (S1-S5),
-    # mixing S1E1 with S2E1, S3E1, etc. Also filter out btn-zip (BATCH/ZIP)
-    # links which are zip packs, not per-episode download pages.
+    # m4ulinks numbers on the post page.
+    # BUG FIX (kept): must position-walk season headings and assign each
+    # m4ulinks number to its nearest preceding "Season N" heading — without
+    # it, episode 1 gets resolved from ALL seasons' pages. Also filter out
+    # btn-zip (BATCH/ZIP) links which are zip packs, not per-episode pages.
     local num_links
     if [[ -n "$season" ]]; then
         num_links=$(printf '%s' "$html" | python3 -c "
@@ -522,71 +403,13 @@ for m in re.finditer(r'<a\s[^>]*href=\"(https://m4ulinks\.[a-z]+/number/\d+)\"[^
     fi
     [[ -z "$num_links" ]] && die_plugin "No m4ulinks pages on Movies4u page for: $id"
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    local pids=() idx=0
-
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        (
-            local btns ep_target=""
-            if [[ -n "$episode" ]]; then
-                ep_target="$episode"
-            fi
-            btns=$(_m4u_resolve_m4ulinks "$link" "$ep_target" 2>/dev/null || true)
-            if [[ -n "$btns" ]]; then
-                printf '%s\n' "$btns" | while IFS= read -r b; do
-                    [[ -z "$b" ]] && continue
-                    case "$b" in
-                        *hubcloud.cx/video*|*hubcloud.*/video*|*vcloud.*)
-                            _m4u_resolve_video "$b"
-                            ;;
-                        *hubcloud*|*hubdrive*)
-                            _m4u_resolve_drive "$b"
-                            ;;
-                        *gdlink*|*gdflix*)
-                            _m4u_resolve_gdflix "$b"
-                            ;;
-                        *)
-                            if _m4u_is_stream_candidate "$b"; then
-                                printf '%s\n' "$b"
-                            fi
-                            ;;
-                    esac
-                done | while IFS= read -r su; do
-                    [[ -z "$su" ]] && continue
-                    [[ "${su,,}" == *sample* ]] && continue
-                    # googleusercontent download pages are not playable streams
-                    [[ "${su,,}" == *video-downloads.googleusercontent* ]] && continue
-                    # pixeldrain page URL → direct file API
-                    if [[ "$su" == *pixeldrain* && "$su" != *"/api/file/"* && "$su" != *"download"* ]]; then
-                        local pd_base pd_id
-                        pd_base=$(printf '%s' "$su" | sed -E 's|^(https?://[^/]+).*|\1|')
-                        pd_id="${su##*/}"
-                        [[ -n "$pd_id" ]] && su="${pd_base}/api/file/${pd_id}?download"
-                    fi
-                    # workers.dev hotlink-check needs Referer from sportverse.cc
-                    if [[ "$su" == *"workers.dev"* ]]; then
-                        _m4u_stream_json "$su" "https://sportverse.cc/"
-                    else
-                        _m4u_stream_json "$su"
-                    fi
-                done > "$tmp_dir/out_${idx}.json"
-            fi
-        ) &
-        pids+=($!)
-        idx=$((idx + 1))
-    done <<< "$num_links"
-
-    wait "${pids[@]}" 2>/dev/null || true
-
-    local merged="[]"
-    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-        # out_*.json are line-delimited objects; jq -s slurps them into the
-        # array directly (never 'add' — that merges objects into one).
-        merged=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s 'unique_by(.url)' 2>/dev/null) || merged="[]"
-    fi
-    rm -rf "$tmp_dir"
+    M4U_WORKER_EPISODE="$episode"
+    SDK_FANOUT_MERGE='unique_by(.url)'
+    local -a _links=()
+    mapfile -t _links <<< "$num_links"
+    local merged
+    merged=$(sdk_fanout _m4u_get_url_worker "${_links[@]}")
+    unset M4U_WORKER_EPISODE SDK_FANOUT_MERGE
 
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
@@ -604,6 +427,7 @@ plugin_list_seasons() {
     local seasons_json
     seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | jq -c '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
 
+    # Fallback: title range like "Season 1-2" or "Season 1 – 2"
     if [[ -z "$seasons_json" || "$seasons_json" == "[]" ]]; then
         local range
         range=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+[[:space:]]*[-–][[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -2 | tr '\n' ' ')
@@ -611,11 +435,12 @@ plugin_list_seasons() {
         s1=$(printf '%s' "$range" | awk '{print $1}')
         s2=$(printf '%s' "$range" | awk '{print $2}')
         if [[ -n "$s1" && -n "$s2" && "$s2" -gt "$s1" ]]; then
-            seasons_json="[]"
-            local i
+            # Batched JSONL → one jq pass (was one fork per season)
+            local lines="" i
             for (( i = s1; i <= s2; i++ )); do
-                seasons_json=$(printf '%s' "$seasons_json" | jq -c --argjson n "$i" '. + [{"id": ($n|tostring), "title": ("Season " + ($n|tostring)), "number": $n}]' 2>/dev/null)
+                lines+="$(jq -nc --argjson n "$i" '{"id": ($n|tostring), "title": ("Season " + ($n|tostring)), "number": $n}')"$'\n'
             done
+            seasons_json=$(jq -s '.' <<< "$lines")
         fi
     fi
 
@@ -664,12 +489,13 @@ for l in links:
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$page" | grep -cE 'downloads-btns-div' 2>/dev/null || true)
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
 
-    local i eps_json="[]"
+    # Batched JSONL → one jq pass (was one jq fork per episode)
+    local lines="" i
     for (( i = 1; i <= ep_count; i++ )); do
-        eps_json=$(printf '%s' "$eps_json" | jq -c --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
-            '. + [{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}]' 2>/dev/null)
+        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
+            '{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}')"$'\n'
     done
-    printf '%s\n' "$eps_json"
+    jq -s '.' <<< "$lines"
 }
 
 plugin_health() {

@@ -6,6 +6,9 @@
 #   → resolver page (gamerxyt.com/hubcloud.php) → direct .mkv (workers.dev / fsl-buckets)
 #   or pixel.hubcloud.cx → dl.php?link=video-downloads.googleusercontent.com
 
+[[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
+[[ -f "${LIB_DIR:-}/cinemeta.sh" ]] && source "${LIB_DIR}/cinemeta.sh"
+
 # ═══════════════════════════════════════════════════════════════
 # Plugin Metadata
 # ═══════════════════════════════════════════════════════════════
@@ -31,199 +34,56 @@ _4KH_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/m
 _4KH_DOMAINS_CACHE_KEY="4khdhub_domains"
 _4KH_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
+# Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh)
+_4KH_REJECT_GLOBS='*tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*'
+_4KH_FAMILY_GLOBS='*workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*'
+_4KH_PIXEL_GLOBS='*pixel.hubcloud.cx*|*gpdl.hubcloud.cx*'
+
 _load_4kh_config() {
-    local conf_file="$CONF_DIR/4khdhub.conf"
-    [[ -f "$conf_file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        local key="${line%%=*}"
-        local value="${line#*=}"
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-        [[ -z "$key" ]] && continue
-        case "$key" in
-            BASE_URL) _4KH_BASE="$value"; _4KH_BASE_USER_SET=1 ;;
-            ALLOW_HOSTS) _4KH_ALLOW_HOSTS="$value" ;;
-        esac
-    done < "$conf_file"
+    sdk_conf_load "$CONF_DIR/4khdhub.conf" KH BASE_URL ALLOW_HOSTS
+    [[ -n "${KH_BASE_URL+x}" && -n "${KH_BASE_URL}" ]] && { _4KH_BASE="$KH_BASE_URL"; _4KH_BASE_USER_SET=1; }
+    [[ -n "${KH_ALLOW_HOSTS+x}" ]] && _4KH_ALLOW_HOSTS="$KH_ALLOW_HOSTS"
+    # No baked-in Referer on this site's requests — SDK mirrors that.
+    sdk_http "$_4KH_UA"
 }
 
 # Auto domain rotation (CloudStream-style): fetch the live domain list once a
 # day, use the returned domain unless the user pinned BASE_URL in conf.
 _4kh_load_domains() {
     [[ "$_4KH_BASE_USER_SET" == "1" ]] && return 0
-
-    local cached=""
-    if declare -f cache_get >/dev/null 2>&1; then
-        cached=$(cache_get "$_4KH_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
-    fi
-    if [[ -z "$cached" ]]; then
-        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_4KH_UA" "$_4KH_DOMAINS_URL" 2>/dev/null || true)
-        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
-            if declare -f cache_set >/dev/null 2>&1; then
-                cache_set "$_4KH_DOMAINS_CACHE_KEY" "$cached" || true
-            fi
-        else
-            cached=""
-        fi
-    fi
-    [[ -z "$cached" ]] && return 0
-
     local dom
-    dom=$(printf '%s' "$cached" | jq -r '.["4khdhub"] // empty' 2>/dev/null || true)
-    [[ -z "$dom" || "$dom" == "null" ]] && return 0
-    dom="${dom%/}"
-    dom="${dom## }"
-    if [[ "$dom" != "$_4KH_BASE" ]]; then
-        debug "4KHDHub domain rotated: $_4KH_BASE → $dom"
-        _4KH_BASE="$dom"
-    fi
+    dom=$(sdk_rotate_domain "$_4KH_DOMAINS_CACHE_KEY" "$_4KH_DOMAINS_URL" \
+        "4khdhub" "$_4KH_BASE" "4KHDHub" "$_4KH_UA") || return 0
+    [[ -z "$dom" ]] && return 0
+    _4KH_BASE="$dom"
+}
+
+# Fuzzy host matching for resolver links (CloudStream-style: match broadly,
+# let verify_streams filter garbage). See lib/pluginsdk.sh sdk_is_stream_candidate.
+_4kh_is_stream_candidate() {
+    sdk_is_stream_candidate "$1" "$_4KH_ALLOW_HOSTS" "$_4KH_REJECT_GLOBS" "$_4KH_FAMILY_GLOBS"
+}
+
+_4kh_quality() {
+    # Quality from filename: 2160p/4K → 4K (standalone token — "DS4K"/"S4K"
+    # release tags must NOT match), 1080p → 1080, etc.
+    sdk_quality_token "$1"
+}
+
+_4kh_stream_json() {
+    # Percent-encode the URL: resolver pages emit raw spaces/brackets in
+    # filenames which curl's globbing chokes on (rc=3).
+    sdk_stream_json_encoded "4khdhub" "$(sdk_quality_token "$1")" "$1"
 }
 
 # ═══════════════════════════════════════════════════════════════
 # Resolver walk: hubcloud drive page → resolver page → direct links
 # ═══════════════════════════════════════════════════════════════
 
-# Resolve one hubcloud.*/drive/ID page into candidate stream URLs
-# (one per line on stdout). Follows HubCloud.kt logic:
-#   drive page → #download href → resolver page → btn links
+# Resolve one hubcloud.*/drive/ID page into candidate stream URLs.
+# Follows HubCloud.kt logic: drive page → #download href → resolver → btn links.
 _4kh_resolve_drive() {
-    local drive_url="$1"
-    local page href base
-
-    page=$(curl "${_4KH_CURL[@]}" "$drive_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    # hubcloud.php links are used directly; otherwise extract #download href
-    if [[ "$drive_url" == *"hubcloud.php"* ]]; then
-        href="$drive_url"
-    else
-        href=$(printf '%s' "$page" | grep -oE 'id="download" href="[^"]+"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
-        [[ -z "$href" ]] && return 1
-        if [[ "$href" != http* ]]; then
-            base=$(printf '%s' "$drive_url" | sed -E 's|^(https?://[^/]+).*|\1|')
-            href="${base}/${href#/}"
-        fi
-    fi
-
-    _4kh_resolve_resolver "$href"
-}
-
-# Resolve a resolver page (e.g. gamerxyt.com/hubcloud.php?host=...&id=...&token=...)
-# into direct stream URLs. Live page structure (2026-08-05):
-#   <a href="https://cdn.fsl-buckets.work/....mkv?token=..." class="btn btn-success btn-lg h6">
-#   <a href="https://patient-....workers.dev/.../....mkv" class="btn btn-success btn-lg h6">
-#   <a href="https://pixel.hubcloud.cx/?id=..." class="btn btn-danger btn-lg h6">
-# Fuzzy host matching for resolver links (CloudStream-style: match broadly,
-# let verify_streams filter garbage). Accepts a link as a stream candidate if:
-#   1. host contains a known file-host family (substring match handles rotated
-#      subdomains: workers.dev, r2.cloudflarestorage, fsl*, pixeldrain,
-#      hubcloud, hubdrive, filescdn, aiplex, googleusercontent), OR
-#   2. URL looks like a direct media file (.mkv/.mp4/.m3u8/.webm/.ts/.flv), OR
-#   3. host matches a user-configured ALLOW_HOSTS token (comma-separated
-#      substrings in $CONF_DIR/4khdhub.conf — add new hosts without editing
-#      the plugin).
-# Hard rejects: telegram, ad, navigation, and shortener links.
-_4kh_is_stream_candidate() {
-    local link="$1"
-    local lower
-    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # Hard rejects — these are never streams
-    case "$lower" in
-        *tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*)
-            return 1 ;;
-    esac
-
-    # User-configured host allowlist wins over everything
-    if [[ -n "$_4KH_ALLOW_HOSTS" ]]; then
-        local host allow
-        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
-        local -a allow_arr=()
-        IFS=',' read -r -a allow_arr <<< "$_4KH_ALLOW_HOSTS"
-        for allow in "${allow_arr[@]}"; do
-            allow="${allow,,}"
-            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
-        done
-    fi
-
-    # Known file-host families (substring match = fuzzy across rotated hosts)
-    case "$lower" in
-        *workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*)
-            return 0 ;;
-    esac
-
-    # Direct media URL heuristic — video extension anywhere in the URL
-    case "$lower" in
-        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
-            return 0 ;;
-    esac
-
-    return 1
-}
-
-_4kh_resolve_resolver() {
-    local resolver_url="$1"
-    local page
-
-    page=$(curl "${_4KH_CURL[@]}" "$resolver_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    # All download buttons: a.btn links
-    printf '%s' "$page" | grep -oE '<a[^>]*href="https?://[^"]+"[^>]*class="[^"]*btn[^"]*"' | \
-        sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
-        case "$link" in
-            *pixel.hubcloud.cx*|*gpdl.hubcloud.cx*)
-                # pixel/gpdl → 302 → pixel.*.workers.dev → dl.php?link=googleusercontent
-                _4kh_resolve_pixel "$link"
-                ;;
-            *pixeldrain*)
-                # pixeldrain.dev/u/ID → API form /api/file/ID?download (HubCloud.kt logic)
-                if [[ "$link" == *"/api/file/"* || "$link" == *"download"* ]]; then
-                    printf '%s\n' "$link"
-                else
-                    local pd_base pd_id
-                    pd_base=$(printf '%s' "$link" | sed -E 's|^(https?://[^/]+).*|\1|')
-                    pd_id="${link##*/}"
-                    printf '%s\n' "${pd_base}/api/file/${pd_id}?download"
-                fi
-                ;;
-            *)
-                # Fuzzy match — no exact host allowlist; unknown-but-plausible
-                # mirrors are accepted here and filtered by verify_streams later
-                if _4kh_is_stream_candidate "$link"; then
-                    printf '%s\n' "$link"
-                fi
-                ;;
-        esac
-    done
-}
-
-# pixel.hubcloud.cx/?id=... → 302 → pixel.*.workers.dev → page w/ dl.php?link=...
-# The dl.php page JS sets downloadBtn.href = link param; final URL = link param.
-_4kh_resolve_pixel() {
-    local pixel_url="$1"
-    local page dl_url final url_eff tmpbody
-    tmpbody=$(mktemp)
-    page=$(curl "${_4KH_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
-    url_eff="$page"
-    page=$(cat "$tmpbody" 2>/dev/null || true)
-    rm -f "$tmpbody"
-    dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' ]*dl\.php\?link=[^"'"'"' ]+' | head -1 2>/dev/null || true)
-    if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
-        dl_url="$url_eff"
-    fi
-    [[ -z "$dl_url" ]] && return 1
-    final=$(printf '%s' "$dl_url" | sed -E 's/.*link=//' | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))' 2>/dev/null || true)
-    [[ -z "$final" ]] && return 1
-    printf '%s\n' "$final"
+    sdk_resolve_drive "$1" _4kh_is_stream_candidate 1 "$_4KH_PIXEL_GLOBS"
 }
 
 # Resolve any supported mirror URL to candidate stream URLs
@@ -236,38 +96,39 @@ _4kh_resolve_link() {
     esac
 }
 
-# Quality from filename: 2160p/4K → 4K, 1080p → 1080, etc.
-# 4K must be a standalone token — "DS4K"/"S4K" release tags must NOT match
-_4kh_quality() {
-    local s="$1"
-    if [[ "$s" =~ (2160[pP]|(^|[^a-zA-Z0-9])4[Kk]([^a-zA-Z0-9]|$)) ]]; then printf '4K'
-    elif [[ "$s" =~ (1440[pP]|2[Kk]) ]]; then printf '1440'
-    elif [[ "$s" =~ 1080[pP] ]]; then printf '1080'
-    elif [[ "$s" =~ 720[pP] ]]; then printf '720'
-    elif [[ "$s" =~ 480[pP] ]]; then printf '480'
-    elif [[ "$s" =~ 360[pP] ]]; then printf '360'
-    else printf 'auto'
-    fi
-}
-
-# Build stream JSON object from a URL
-# Percent-encode the URL: resolver pages emit raw spaces/brackets in filenames
-# which curl's globbing chokes on (rc=3). Safe chars keep URL structure intact.
-_4kh_stream_json() {
-    local url="$1"
-    local enc qual
-    enc=$(printf '%s' "$url" | python3 -c '
-import sys, urllib.parse
-# brackets/spaces/plus must be encoded — curl globbing breaks on raw [] and rc=3
-print(urllib.parse.quote(sys.stdin.read().strip(), safe=":/?&=%,.+-_()~"))
-' 2>/dev/null || printf '%s' "$url")
-    qual=$(_4kh_quality "$url")
-    jq -nc --arg u "$enc" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "4khdhub"}'
-}
-
 # ═══════════════════════════════════════════════════════════════
 # Plugin Functions
 # ═══════════════════════════════════════════════════════════════
+
+# Parse movie cards: <a href="/slug/" class="movie-card" ...> ... <div class="movie-card-title">TITLE</div>
+# With a candidate title, only fuzzy-matched cards are emitted.
+_4kh_parse_movie_cards() {
+    local html_page="$1" ctitle="${2:-}" cyear="${3:-}"
+    printf '%s' "$html_page" | python3 -c '
+import sys, re, json
+html = sys.stdin.read()
+ctitle = sys.argv[1] if len(sys.argv) > 1 else ""
+cyear = sys.argv[2] if len(sys.argv) > 2 else ""
+ctnorm = re.sub(r"[^a-z0-9]", "", ctitle.lower()) if ctitle else ""
+out = []
+for m in re.finditer(r"<a href=\"(/[^\"]+)\"[^>]*class=\"movie-card\"[^>]*>(.*?)</a>", html, re.S):
+    slug, inner = m.group(1), m.group(2)
+    title_m = re.search(r"movie-card-title[^>]*>([^<]+)", inner)
+    if not title_m:
+        continue
+    title = title_m.group(1).strip()
+    if ctnorm:
+        tnorm = re.sub(r"[^a-z0-9]", "", title.lower())
+        if ctnorm not in tnorm and tnorm not in ctnorm:
+            continue
+    typ = "series" if "-series-" in slug else "movie"
+    item = {"id": slug.strip("/"), "title": title, "type": typ}
+    if cyear:
+        item["year"] = cyear
+    out.append(item)
+print(json.dumps(out))
+' "$ctitle" "$cyear" 2>/dev/null || printf '[]'
+}
 
 plugin_search() {
     local query="$1"
@@ -282,69 +143,38 @@ plugin_search() {
     html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/?s=${encoded_query}" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    # Parse movie cards: <a href="/slug/" class="movie-card" ...> ... <div class="movie-card-title">TITLE</div>
     local wp_results
-    wp_results=$(printf '%s' "$html" | python3 -c '
-import sys, re, json
-html = sys.stdin.read()
-out = []
-for m in re.finditer(r"<a href=\"(/[^\"]+)\"[^>]*class=\"movie-card\"[^>]*>(.*?)</a>", html, re.S):
-    slug, inner = m.group(1), m.group(2)
-    title_m = re.search(r"movie-card-title[^>]*>([^<]+)", inner)
-    if not title_m:
-        continue
-    title = title_m.group(1).strip()
-    typ = "series" if "-series-" in slug else "movie"
-    out.append({"id": slug.strip("/"), "title": title, "type": typ})
-print(json.dumps(out))
-' 2>/dev/null || printf '[]')
+    wp_results=$(_4kh_parse_movie_cards "$html")
 
-    # Cinemeta fallback: when WP site search returns sparse results
-    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
-    set +euo pipefail
-    local wp_count
-    wp_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
-    if [[ "$wp_count" -lt 2 ]]; then
-        local cm_all cm_tmp cm_rows
-        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
-        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
-            cm_tmp=$(mktemp)
-            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
-            while IFS= read -r meta; do
-                [[ -z "$meta" ]] && continue
-                local cname cyear ctype site_html
-                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
-                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
-                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
-                [[ -z "$cname" ]] && continue
-                site_html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/?s=$(urlencode "${cname} ${cyear}")" 2>/dev/null || true)
-                [[ -z "$site_html" ]] && continue
-                printf '%s' "$site_html" | python3 -c '
-import sys, re, json
-html = sys.stdin.read()
-ctitle = sys.argv[1]
-ctnorm = re.sub(r"[^a-z0-9]", "", ctitle.lower())
-for m in re.finditer(r"<a href=\"(/[^\" ]+)\"[^>]*class=\"movie-card\"[^>]*>(.*?)</a>", html, re.S):
-    slug, inner = m.group(1), m.group(2)
-    title_m = re.search(r"movie-card-title[^>]*>([^<]+)", inner)
-    if not title_m: continue
-    title = title_m.group(1).strip()
-    tnorm = re.sub(r"[^a-z0-9]", "", title.lower())
-    if ctnorm in tnorm or tnorm in ctnorm:
-        typ = "series" if "-series-" in slug else "movie"
-        print(json.dumps({"id": slug.strip("/"), "title": title, "type": typ, "year": sys.argv[2]}))
-' "$cname" "$cyear" 2>/dev/null | while IFS= read -r j; do
-                    [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
-                done
-            done <<< "$cm_rows"
-            if [[ -s "$cm_tmp" ]]; then
-                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
-                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null || printf '%s' "$wp_results")
-            fi
-            rm -f "$cm_tmp"
-        fi
-    fi
-    printf '%s' "$wp_results"
+    # Cinemeta fallback (shared orchestrator): re-search the site's WP ?s=
+    # endpoint per canonical title when the primary search is sparse.
+    cinemeta_search_fallback "$query" "$wp_results" _4kh_research_site
+}
+
+# Cinemeta research callback: WP site re-search by canonical title+year.
+_4kh_research_site() {
+    local cname="$1" cyear="$2"
+    local site_html
+    site_html=$(curl "${_4KH_CURL[@]}" "${_4KH_BASE}/?s=$(urlencode "${cname} ${cyear}")" 2>/dev/null || true)
+    [[ -z "$site_html" ]] && return 0
+    _4kh_parse_movie_cards "$site_html" "$cname" "$cyear"
+}
+
+# Fan-out worker: resolve ONE mirror link into stream JSON objects.
+_4kh_get_url_worker() {
+    local link="$1"
+    local streams
+    streams=$(_4kh_resolve_link "$link") || return 0
+    [[ -z "$streams" ]] && return 0
+    local su
+    while IFS= read -r su; do
+        [[ -z "$su" ]] && continue
+        # Skip SAMPLE/trailer preview files (uploaders ship a 5-min
+        # "SAMPLE-*.mkv" next to the real movie; it outranks it at
+        # the same resolution in sort_streams)
+        [[ "${su,,}" == *sample* ]] && continue
+        _4kh_stream_json "$su"
+    done <<< "$streams"
 }
 
 plugin_get_url() {
@@ -392,37 +222,10 @@ for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", h
     [[ -z "$mirror_links" ]] && die_plugin "No mirror links found on 4KHDHub page for: $id"
 
     # Resolve all mirror links (parallel — each is 2-3 HTTP hops)
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    local pids=() idx=0
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        (
-            local streams=""
-            streams=$(_4kh_resolve_link "$link" 2>/dev/null || true)
-            if [[ -n "$streams" ]]; then
-                printf '%s\n' "$streams" | while IFS= read -r su; do
-                    [[ -z "$su" ]] && continue
-                    # Skip SAMPLE/trailer preview files (uploaders ship a 5-min
-                    # "SAMPLE-*.mkv" next to the real movie; it outranks it at
-                    # the same resolution in sort_streams)
-                    [[ "${su,,}" == *sample* ]] && continue
-                    _4kh_stream_json "$su"
-                done > "$tmp_dir/out_${idx}.json"
-            fi
-        ) &
-        pids+=($!)
-        idx=$((idx + 1))
-    done <<< "$mirror_links"
-
-    wait "${pids[@]}" 2>/dev/null || true
-
-    local merged="[]"
-    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-        merged=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s '.' 2>/dev/null) || merged="[]"
-    fi
-    rm -rf "$tmp_dir"
-
+    local -a _links=()
+    mapfile -t _links <<< "$mirror_links"
+    local merged
+    merged=$(sdk_fanout _4kh_get_url_worker "${_links[@]}")
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
 }

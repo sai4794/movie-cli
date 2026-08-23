@@ -17,6 +17,8 @@
 # Domain rotation: SaurabhKaperwan/Utils/urls.json (key "vegamovies").
 # ═══════════════════════════════════════════════════════════════
 
+[[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
+
 PLUGIN_NAME="VegaMovies"
 PLUGIN_VERSION="1.0.0"
 PLUGIN_API_VERSION="5"
@@ -35,124 +37,42 @@ _VM_DOMAINS_URL="https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/he
 _VM_DOMAINS_CACHE_KEY="vegamovies_domains"
 _VM_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
+# Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh):
+# hard rejects → user allowlist → known host families → media extensions.
+_VM_REJECT_GLOBS='*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me/*|*googlesyndication*|*doubleclick*|*bit\.ly*|*cutt\.ly*|*nexdrive*|*wp-content*|*gmpg*|*xmlrpc*|*vegamovies-apk*|*gokuhd*|*rogmovies*'
+_VM_FAMILY_GLOBS='*vcloud*|*hubcloud*|*hubdrive*|*r2.cloudflarestorage*|*gpdl*|*pixeldrain*|*gofile*|*filebee*|*megaup*|*transfer\.it*|*vikingfile*|*fastdl*|*fsl*|*workers.dev*|*googleusercontent*'
+
 _load_vm_config() {
-    local conf_file="$CONF_DIR/vegamovies.conf"
-    [[ -f "$conf_file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        local key="${line%%=*}"
-        local value="${line#*=}"
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-        [[ -z "$key" ]] && continue
-        case "$key" in
-            BASE_URL) _VM_BASE="$value"; _VM_BASE_USER_SET=1 ;;
-            ALLOW_HOSTS) _VM_ALLOW_HOSTS="$value" ;;
-        esac
-    done < "$conf_file"
+    sdk_conf_load "$CONF_DIR/vegamovies.conf" VM BASE_URL ALLOW_HOSTS
+    [[ -n "${VM_BASE_URL:-}" ]] && { _VM_BASE="$VM_BASE_URL"; _VM_BASE_USER_SET="${VM_USER_SET:-1}"; }
+    [[ -n "${VM_ALLOW_HOSTS+x}" ]] && _VM_ALLOW_HOSTS="$VM_ALLOW_HOSTS"
 }
 
 # Auto domain rotation (CSX-style): fetch the live URL list once a day
 _vm_load_domains() {
     [[ "$_VM_BASE_USER_SET" == "1" ]] && return 0
-
-    local cached=""
-    if declare -f cache_get >/dev/null 2>&1; then
-        cached=$(cache_get "$_VM_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
-    fi
-    if [[ -z "$cached" ]]; then
-        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_VM_UA" "$_VM_DOMAINS_URL" 2>/dev/null || true)
-        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
-            if declare -f cache_set >/dev/null 2>&1; then
-                cache_set "$_VM_DOMAINS_CACHE_KEY" "$cached" || true
-            fi
-        else
-            cached=""
-        fi
-    fi
-    [[ -z "$cached" ]] && return 0
-
     local dom
-    dom=$(printf '%s' "$cached" | jq -r '.["vegamovies"] // empty' 2>/dev/null || true)
-    [[ -z "$dom" || "$dom" == "null" ]] && return 0
-    dom="${dom%/}"
-    dom="${dom## }"
-    if [[ "$dom" != "$_VM_BASE" ]]; then
-        debug "VegaMovies domain rotated: $_VM_BASE → $dom"
-        _VM_BASE="$dom"
-    fi
+    dom=$(sdk_rotate_domain "$_VM_DOMAINS_CACHE_KEY" "$_VM_DOMAINS_URL" \
+        "vegamovies" "$_VM_BASE" "VegaMovies" "$_VM_UA") || return 0
+    [[ -z "$dom" ]] && return 0
+    _VM_BASE="$dom"
 }
 
 # Fuzzy host matching — same policy as 4khdhub/hdhub4u: match broadly,
 # let verify_streams filter garbage. VegaMovies resolver pages emit
 # vcloud/gpdl2/r2/gofile/filebee/megaup/transfer/vikingfile links.
 _vm_is_stream_candidate() {
-    local link="$1"
-    local lower
-    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # Hard rejects — ad/navigation/shortener links
-    case "$lower" in
-        *snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me/*|*googlesyndication*|*doubleclick*|*bit\.ly*|*cutt\.ly*|*nexdrive*|*wp-content*|*gmpg*|*xmlrpc*|*vegamovies-apk*|*gokuhd*|*rogmovies*)
-            return 1 ;;
-    esac
-
-    # User-configured host allowlist wins
-    if [[ -n "$_VM_ALLOW_HOSTS" ]]; then
-        local host allow
-        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
-        local -a allow_arr=()
-        IFS=',' read -r -a allow_arr <<< "$_VM_ALLOW_HOSTS"
-        for allow in "${allow_arr[@]}"; do
-            allow="${allow,,}"
-            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
-        done
-    fi
-
-    # Known file-host families
-    case "$lower" in
-        *vcloud*|*hubcloud*|*hubdrive*|*r2.cloudflarestorage*|*gpdl*|*pixeldrain*|*gofile*|*filebee*|*megaup*|*transfer\.it*|*vikingfile*|*fastdl*|*fsl*|*workers.dev*|*googleusercontent*)
-            return 0 ;;
-    esac
-
-    # Direct media URL heuristic
-    case "$lower" in
-        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
-            return 0 ;;
-    esac
-
-    return 1
+    sdk_is_stream_candidate "$1" "$_VM_ALLOW_HOSTS" "$_VM_REJECT_GLOBS" "$_VM_FAMILY_GLOBS"
 }
 
 _vm_quality() {
-    local url="$1"
-    local lower
-    lower=$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')
-    case "$lower" in
-        *2160p*|*4k*) echo "2160p" ;;
-        *1080p*) echo "1080p" ;;
-        *720p*) echo "720p" ;;
-        *480p*) echo "480p" ;;
-        *) echo "auto" ;;
-    esac
+    sdk_quality_suffix "$1"
 }
 
 _vm_stream_json() {
+    # Quality is detected from the RAW url (pre-encoding), matching CSX.
     local url="$1"
-    local enc qual
-    enc=$(printf '%s' "$url" | python3 -c '
-import sys, urllib.parse
-print(urllib.parse.quote(sys.stdin.read().strip(), safe=":/?&=%,.+-_()~"))
-' 2>/dev/null || printf '%s' "$url")
-    qual=$(_vm_quality "$url")
-    jq -nc --arg u "$enc" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "vegamovies"}'
+    sdk_stream_json_encoded "vegamovies" "$(sdk_quality_suffix "$url")" "$url"
 }
 
 # Resolve one vcloud.zip/j_... (or fastdl.zip/embed) link → direct video URLs.
@@ -437,6 +357,81 @@ print(json.dumps(out))
 ' "$query" 2>/dev/null
 }
 
+# Season-position walk shared by get_url/list_episodes: assign each
+# nexdrive link to its nearest preceding "Season N" heading.
+_vm_season_links() {
+    local html_page="$1" want="$2"
+    printf '%s' "$html_page" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = sys.argv[1]
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", m.group(1)))
+for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+cur = "0"
+out = []
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    elif cur == want:
+        out.append(val)
+print("\n".join(dict.fromkeys(out)))
+' "$want" 2>/dev/null || true
+}
+
+# Episode-links page pairing: prefer vcloud.fit → fastdl.zip → dgdrive
+# (ad-gated, last resort), bounded to each "Episodes: N:-" block so a block
+# missing the preferred family cannot steal the next episode's link.
+_vm_episode_pairs() {
+    local ep_html="$1"
+    printf '%s' "$ep_html" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
+families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
+alllinks = {}
+for fam in families:
+    alllinks[fam] = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
+pairs = []
+for lpos, n in labels:
+    nxt_label = next((p for p, _ in labels if p > lpos), len(html))
+    for fam in families:
+        nxt = next((l for p2, l in alllinks[fam] if lpos < p2 < nxt_label), None)
+        if nxt:
+            pairs.append((n, nxt))
+            break
+for n, l in sorted(set(pairs)):
+    print("%d|%s" % (n, l))
+' 2>/dev/null || true
+}
+
+# Fan-out worker: resolve ONE nexdrive/vcloud link into stream JSON objects.
+_vm_get_url_worker() {
+    local link="$1"
+    local streams=""
+    # Direct vcloud-family links (from the episode lookup) go straight to
+    # the VCloud resolver (double-atob + button menu). Other links are
+    # nexdrive resolver pages.
+    case "$link" in
+        *vcloud.fit*|*vcloud.zip*|*fastdl.zip*|*vcloud.org*)
+            streams=$(_vm_resolve_vcloud "$link")
+            ;;
+        *)
+            streams=$(_vm_resolve_nexdrive "$link")
+            ;;
+    esac
+    [[ -z "$streams" ]] && return 0
+    local su
+    while IFS= read -r su; do
+        [[ -z "$su" ]] && continue
+        [[ "${su,,}" == *sample* ]] && continue
+        _vm_stream_json "$su"
+    done <<< "$streams"
+}
+
 plugin_get_url() {
     local id="$1"
     local quality="${2:-720}"
@@ -469,25 +464,7 @@ plugin_get_url() {
     if [[ -n "$season" && -n "$episode" ]]; then
         # fetch the episode-links page for this season, find episode N's url
         local season_links
-        season_links=$(printf '%s' "$html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-want = sys.argv[1]
-tokens = []
-for m in re.finditer(r"Season\s*(\d+)", html):
-    tokens.append((m.start(), "S", m.group(1)))
-for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
-    tokens.append((m.start(), "L", m.group(1)))
-tokens.sort(key=lambda t: t[0])
-cur = "0"
-out = []
-for pos, kind, val in tokens:
-    if kind == "S":
-        cur = val
-    elif cur == want:
-        out.append(val)
-print("\n".join(dict.fromkeys(out)))
-' "$season" 2>/dev/null || true)
+        season_links=$(_vm_season_links "$html" "$season")
         # find that episode's OWN playable link on the episode-links page.
         # The page lists FIVE host families per episode (vcloud.fit,
         # fastdl.zip, filebee, gdtot, dgdrive) — prefer vcloud/fastdl like
@@ -501,27 +478,7 @@ print("\n".join(dict.fromkeys(out)))
             # first match and a large page makes printf hit SIGPIPE (141) →
             # pipefail → the check flips to false intermittently.
             if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
-                found=$(printf '%s' "$ep_html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-want = int(sys.argv[1])
-labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
-# prefer vcloud.fit then fastdl.zip then dgdrive (ad-gated) as last resort
-families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
-for lpos, n in labels:
-    if n == want:
-        # bound to THIS block: link must sit between this label and the
-        # next — otherwise a block missing the preferred family grabs the
-        # next episode link (same fix as plugin_list_episodes).
-        nxt_label = next((p for p, _ in labels if p > lpos), len(html))
-        for fam in families:
-            links = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
-            nxt = next((l for p2, l in links if lpos < p2 < nxt_label), None)
-            if nxt:
-                print(nxt)
-                break
-        break
-' "$episode" 2>/dev/null || true)
+                found=$(_vm_episode_pair_for "$ep_html" "$episode")
                 [[ -n "$found" ]] && break
             fi
         done <<< "$season_links"
@@ -529,91 +486,27 @@ for lpos, n in labels:
             nx_links="$found"
         else
             # episode page missing — fall back to the season's links
-            nx_links=$(printf '%s' "$html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-want = sys.argv[1]
-tokens = []
-for m in re.finditer(r"Season\s*(\d+)", html):
-    tokens.append((m.start(), "S", m.group(1)))
-for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
-    tokens.append((m.start(), "L", m.group(1)))
-tokens.sort(key=lambda t: t[0])
-cur = "0"
-out = []
-for pos, kind, val in tokens:
-    if kind == "S":
-        cur = val
-    elif cur == want:
-        out.append(val)
-print("\n".join(dict.fromkeys(out)))
-' "$season" 2>/dev/null || true)
+            nx_links=$(_vm_season_links "$html" "$season")
         fi
     elif [[ -n "$season" ]]; then
-        nx_links=$(printf '%s' "$html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-want = int(sys.argv[1])
-tokens = []
-for m in re.finditer(r"Season\s*(\d+)", html):
-    tokens.append((m.start(), "S", m.group(1)))
-for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
-    tokens.append((m.start(), "L", m.group(1)))
-tokens.sort(key=lambda t: t[0])
-cur = "0"
-out = []
-for pos, kind, val in tokens:
-    if kind == "S":
-        cur = val
-    elif cur == str(want):
-        out.append(val)
-print("\n".join(dict.fromkeys(out)))
-' "$season" 2>/dev/null || true)
+        nx_links=$(_vm_season_links "$html" "$season")
     else
         nx_links=$(printf '%s' "$html" | grep -oE 'href="https://nexdrive\.fit/genxfm[0-9]+/"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
     fi
     [[ -z "$nx_links" ]] && die_plugin "No resolver links on VegaMovies page for: $id"
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    local pids=() idx=0
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        (
-            local streams=""
-            # Direct vcloud-family links (from the episode lookup) go
-            # straight to the VCloud resolver (double-atob + button menu).
-            # Other links are nexdrive resolver pages.
-            case "$link" in
-                *vcloud.fit*|*vcloud.zip*|*fastdl.zip*|*vcloud.org*)
-                    streams=$(_vm_resolve_vcloud "$link" 2>/dev/null || true)
-                    ;;
-                *)
-                    streams=$(_vm_resolve_nexdrive "$link" 2>/dev/null || true)
-                    ;;
-            esac
-            if [[ -n "$streams" ]]; then
-                printf '%s\n' "$streams" | while IFS= read -r su; do
-                    [[ -z "$su" ]] && continue
-                    [[ "${su,,}" == *sample* ]] && continue
-                    _vm_stream_json "$su"
-                done > "$tmp_dir/out_${idx}.json"
-            fi
-        ) &
-        pids+=($!)
-        idx=$((idx + 1))
-    done <<< "$nx_links"
-
-    wait "${pids[@]}" 2>/dev/null || true
-
-    local merged="[]"
-    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-        merged=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s '.' 2>/dev/null) || merged="[]"
-    fi
-    rm -rf "$tmp_dir"
-
+    local -a _links=()
+    mapfile -t _links <<< "$nx_links"
+    local merged
+    merged=$(sdk_fanout _vm_get_url_worker "${_links[@]}")
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
+}
+
+# Single-episode variant of _vm_episode_pairs: the pair for ONE episode.
+_vm_episode_pair_for() {
+    local ep_html="$1" want_ep="$2"
+    _vm_episode_pairs "$ep_html" | awk -F'|' -v want="$want_ep" '$1 == want {print $2; exit}'
 }
 
 plugin_list_seasons() {
@@ -657,25 +550,7 @@ plugin_list_episodes() {
 
     # 1) find the nexdrive link for this season (position-walk as in get_url)
     local season_links
-    season_links=$(printf '%s' "$html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-want = sys.argv[1]
-tokens = []
-for m in re.finditer(r"Season\s*(\d+)", html):
-    tokens.append((m.start(), "S", m.group(1)))
-for m in re.finditer(r"href=\"(https://nexdrive\.fit/genxfm\d+/)\"", html):
-    tokens.append((m.start(), "L", m.group(1)))
-tokens.sort(key=lambda t: t[0])
-cur = "0"
-out = []
-for pos, kind, val in tokens:
-    if kind == "S":
-        cur = val
-    elif cur == want:
-        out.append(val)
-print("\n".join(dict.fromkeys(out)))
-' "$season_number" 2>/dev/null || true)
+    season_links=$(_vm_season_links "$html" "$season_number")
     if [[ -z "$season_links" ]]; then
         # Bundle post with no direct per-season links (S1-5 packs etc.):
         # emit a single pack entry so the title stays listable/playable
@@ -699,31 +574,7 @@ print("\n".join(dict.fromkeys(out)))
         fi
         [[ -z "$ep_html" ]] && continue
         if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
-            episode_pairs=$(printf '%s' "$ep_html" | python3 -c '
-import sys, re
-html = sys.stdin.read()
-labels = [(m.start(), int(m.group(1))) for m in re.finditer(r"Episodes:\s*([0-9]+)\s*:-", html)]
-# five host families per episode; prefer vcloud.fit then fastdl.zip then
-# dgdrive (ad-gated, last resort) — matches CloudStream (p > a vcloud)
-families = [r"https://vcloud\.fit/[^\"]+", r"https://fastdl\.zip/[^\"]+", r"https://dgdrive\.pro/[^\"]+"]
-alllinks = {}
-for fam in families:
-    alllinks[fam] = [(m.start(), m.group(1)) for m in re.finditer(r"href=\"(" + fam + r")\"", html)]
-pairs = []
-for lpos, n in labels:
-    # Bound the search to THIS episode block: the next link must sit
-    # between this label and the following label — otherwise a block that
-    # lacks the preferred family (e.g. vcloud) grabs the link of the NEXT
-    # episode and pairs E1 with E2s stream.
-    nxt_label = next((p for p, _ in labels if p > lpos), len(html))
-    for fam in families:
-        nxt = next((l for p2, l in alllinks[fam] if lpos < p2 < nxt_label), None)
-        if nxt:
-            pairs.append((n, nxt))
-            break
-for n, l in sorted(set(pairs)):
-    print("%d|%s" % (n, l))
-' 2>/dev/null || true)
+            episode_pairs=$(_vm_episode_pairs "$ep_html")
             [[ -n "$episode_pairs" ]] && break
         fi
     done <<< "$season_links"
@@ -735,15 +586,21 @@ for n, l in sorted(set(pairs)):
         return 0
     fi
 
-    # 3) emit one episode entry per labeled episode (id is the dgdrive link)
-    local json="[]"
+    # 3) emit one episode entry per labeled episode (id is the dgdrive link);
+    #    batched: build JSONL first, one jq pass merges (was one fork per ep)
+    local lines="" n link
     while IFS='|' read -r n link; do
         [[ -z "$n" || -z "$link" ]] && continue
-        json=$(printf '%s' "$json" | jq -c --arg id "${series_id}:${season_number}:${n}" \
+        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${n}" \
             --arg title "Episode $n" --argjson ep "$n" --argjson se "$season_number" \
-            --arg url "$link" '. + [{"id": $id, "title": $title, "episode": $ep, "season": $se, "url": $url}]')
+            --arg url "$link" \
+            '{"id": $id, "title": $title, "episode": $ep, "season": $se, "url": $url}')"$'\n'
     done <<< "$episode_pairs"
-    printf '%s\n' "$json"
+    if [[ -n "$lines" ]]; then
+        jq -s '.' <<< "$lines"
+    else
+        printf '[]'
+    fi
 }
 
 plugin_health() {

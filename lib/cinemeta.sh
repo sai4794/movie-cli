@@ -3,6 +3,9 @@
 # Sourced by plugins that need Cinemeta title resolution.
 # Source order: lib/init.sh → lib/errors.sh → lib/cinemeta.sh → plugin
 
+[[ -n "${_CINEMETA_LOADED:-}" ]] && return 0
+_CINEMETA_LOADED=1
+
 # Query Cinemeta movie + series catalogs for a search term.
 # Returns top N results as a JSON array: [{name, releaseInfo, type}, ...]
 # Usage: cinemeta_top_results "query" [max]
@@ -18,82 +21,60 @@ cinemeta_top_results() {
         "[.[]?.metas[]? | {name, releaseInfo, type}] | .[0:$max]" 2>/dev/null || echo "[]"
 }
 
-# Cinemeta fallback for WP-style ?s= search plugins.
-# When existing results are sparse (<2), query Cinemeta and re-search
-# the WP site by title+year. Returns merged JSON array.
-# Args: $1=query, $2=existing results JSON, $3=CURL_ARRAY_NAME (e.g. _4KH_CURL),
-#       $4=SITE_BASE_URL, $5=RESULT_PARSER_PYTHON (inline python snippet for parsing HTML)
-cinemeta_wp_fallback() {
-    set +euo pipefail
+# ═══════════════════════════════════════════════════════════════
+# Shared sparse-search fallback orchestrator.
+#
+# When a plugin's own search returns fewer than 2 results, query Cinemeta
+# for canonical titles and let the plugin re-search its site per title.
+# Previously every WP-scrape plugin hand-rolled this loop; they now pass a
+# research callback instead:
+#
+#   RESEARCH_FN <title> <year> <type>
+#     → prints JSON (objects and/or arrays, line-delimited) of extra hits
+#
+# Prints EXISTING_JSON untouched when it already has >= 2 results, when
+# Cinemeta is unreachable, or when research yields nothing. Merges with
+# existing results first-in-first-kept (unique_by(.id)).
+# Hardened against pipefail — callers do NOT need `set +euo pipefail`.
+# ═══════════════════════════════════════════════════════════════
+cinemeta_search_fallback() {
     local query="$1"
-    local existing_json="$2"
-    # $3-$5 are curl array name, base URL, and python parser — used inline below
+    local existing="$2"
+    local research_fn="$3"
 
     local count
-    count=$(printf '%s' "$existing_json" | jq 'length' 2>/dev/null || echo 0)
-    [[ "$count" -ge 2 ]] && printf '%s' "$existing_json" && return 0
+    count=$(printf '%s' "$existing" | jq 'length' 2>/dev/null || echo 0)
+    if (( count >= 2 )); then
+        printf '%s' "$existing"
+        return 0
+    fi
 
     local cm_all
-    cm_all=$(cinemeta_top_results "$query" 3)
-    [[ -z "$cm_all" || "$cm_all" == "[]" || "$cm_all" == "null" ]] && printf '%s' "$existing_json" && return 0
-
-    local cm_tmp cm_rows
-    cm_tmp=$(mktemp)
-    cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
-
-    while IFS= read -r meta; do
-        [[ -z "$meta" ]] && continue
-        local cname cyear ctype
-        cname=$(printf '%s' "$meta" | jq -r '.name // ""')
-        cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
-        ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
-        [[ -z "$cname" ]] && continue
-
-        local site_html
-        site_html=$(curl -sL --connect-timeout 8 --max-time 20 \
-            -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36" \
-            -G "${4}/" --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
-        [[ -z "$site_html" ]] && continue
-
-        printf '%s' "$site_html" | python3 -c "$5" "$cname" "$cyear" "$ctype" 2>/dev/null | \
-            while IFS= read -r j; do
-                [[ -n "$j" ]] && printf '%s\n' "$j" >> "$cm_tmp"
-            done
-    done <<< "$cm_rows"
-
-    local cm_merged
-    if [[ -s "$cm_tmp" ]]; then
-        cm_merged=$(printf '%s\n%s' "$existing_json" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
-            | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
-            || printf '%s' "$existing_json")
-    else
-        cm_merged="$existing_json"
+    cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
+    if [[ -z "$cm_all" || "$cm_all" == "[]" || "$cm_all" == "null" ]]; then
+        printf '%s' "$existing"
+        return 0
     fi
-    rm -f "$cm_tmp"
-    printf '%s' "$cm_merged"
-}
 
-# Reusable WP article parser (used by 4khdhub, dudefilms, movies4u fallbacks)
-# Parses <a href="URL">TITLE</a> from HTML, cleans title, extracts slug/type/year.
-cinemeta_wp_parse() {
-    python3 -c "
-import sys, re, html as h, json
-page = sys.stdin.read()
-ctitle, cyear, ctype = sys.argv[1], sys.argv[2], sys.argv[3]
-ctnorm = re.sub(r'[^a-z0-9]', '', ctitle.lower())
-for m in re.finditer(r'<a href=\"(https?://[^\"]+/[a-z0-9-]+/)\"[^>]*>([^<]{5,150})</a>', page):
-    url, title = m.group(1), h.unescape(m.group(2)).strip()
-    if any(x in url for x in ('/tag/','/category/','/page/','/author/','feed','#','?s=','wp-content')): continue
-    tnorm = re.sub(r'[^a-z0-9]', '', title.lower())
-    if ctnorm in tnorm or tnorm in ctnorm:
-        slug = url.rstrip('/').rsplit('/',1)[-1]
-        ym = re.search(r'\((\d{4})\)|(19|20)\d{2}', title)
-        year = (ym.group(1) or ym.group(0)) if ym else ''
-        ct = re.sub(r'^Download\s+','',title,flags=re.I)
-        ct = re.sub(r'\[[^\]]*\]',' ',ct)
-        ct = re.sub(r'\{[^}]*\}',' ',ct)
-        ct = re.sub(r'\s*(4K|[0-9]+p)\s*.*$','',ct,flags=re.I)
-        ct = re.sub(r'\s+',' ',ct).strip(' -|\u2013')
-        print(json.dumps({'id':slug,'title':ct,'type':ctype,'year':year or cyear,'rating':None,'poster':None}))
-"
+    # One jq pass extracts all metadata rows (was three forks per row).
+    local rows name year type
+    rows=$(printf '%s' "$cm_all" | jq -r '
+        .[] | [(.name // ""), (.releaseInfo // ""), (.type // "movie")] | @tsv
+    ' 2>/dev/null || true)
+
+    local tmp
+    tmp=$(mktemp)
+    while IFS=$'\t' read -r name year type; do
+        [[ -z "$name" ]] && continue
+        "$research_fn" "$name" "$year" "$type" >> "$tmp" 2>/dev/null || true
+    done <<< "$rows"
+
+    if [[ -s "$tmp" ]]; then
+        printf '%s\n%s' "$existing" "$(jq -s '.' "$tmp" 2>/dev/null)" \
+            | jq -s 'flatten | unique_by(.id)' 2>/dev/null \
+            || printf '%s' "$existing"
+    else
+        printf '%s' "$existing"
+    fi
+    rm -f "$tmp"
 }

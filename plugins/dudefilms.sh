@@ -17,6 +17,9 @@
 # Domain rotation: phisher98/tvvvv/domains.json (key "dudefilms").
 # ═══════════════════════════════════════════════════════════════
 
+[[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
+[[ -f "${LIB_DIR:-}/cinemeta.sh" ]] && source "${LIB_DIR}/cinemeta.sh"
+
 PLUGIN_NAME="DudeFilms"
 PLUGIN_VERSION="1.0.0"
 PLUGIN_API_VERSION="5"
@@ -34,204 +37,59 @@ _DF_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/tvvvv/refs/heads/ma
 _DF_DOMAINS_CACHE_KEY="dudefilms_domains"
 _DF_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
+# Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh)
+_DF_REJECT_GLOBS='*tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*googlesyndication*|*winexch*|*effectivecpm*|*profitableratecpm*|*a-ads*|*khelostar*'
+_DF_FAMILY_GLOBS='*workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*|*gdlink*|*filepress*|*gofile*|*d0000d*|*drop.download*|*dood*|*driveapp*|*gdtot*'
+_DF_PIXEL_GLOBS='*pixel.hubcloud.cx*|*gpdl.hubcloud.cx*'
+
 _load_df_config() {
-    local conf_file="$CONF_DIR/dudefilms.conf"
-    [[ -f "$conf_file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        local key="${line%%=*}"
-        local value="${line#*=}"
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-        [[ -z "$key" ]] && continue
-        case "$key" in
-            BASE_URL) _DF_BASE="$value"; _DF_BASE_USER_SET=1 ;;
-            ALLOW_HOSTS) _DF_ALLOW_HOSTS="$value" ;;
-        esac
-    done < "$conf_file"
+    sdk_conf_load "$CONF_DIR/dudefilms.conf" DF BASE_URL ALLOW_HOSTS
+    [[ -n "${DF_BASE_URL+x}" && -n "${DF_BASE_URL}" ]] && { _DF_BASE="$DF_BASE_URL"; _DF_BASE_USER_SET=1; }
+    [[ -n "${DF_ALLOW_HOSTS+x}" ]] && _DF_ALLOW_HOSTS="$DF_ALLOW_HOSTS"
+    sdk_http "$_DF_UA"
 }
 
 # Auto domain rotation: fetch the live domain list once a day
 _df_load_domains() {
     [[ "$_DF_BASE_USER_SET" == "1" ]] && return 0
-
-    local cached=""
-    if declare -f cache_get >/dev/null 2>&1; then
-        cached=$(cache_get "$_DF_DOMAINS_CACHE_KEY" 86400 2>/dev/null || true)
-    fi
-    if [[ -z "$cached" ]]; then
-        cached=$(curl -s --connect-timeout 6 --max-time 15 -A "$_DF_UA" "$_DF_DOMAINS_URL" 2>/dev/null || true)
-        if [[ -n "$cached" ]] && printf '%s' "$cached" | jq -e . >/dev/null 2>&1; then
-            if declare -f cache_set >/dev/null 2>&1; then
-                cache_set "$_DF_DOMAINS_CACHE_KEY" "$cached" || true
-            fi
-        else
-            cached=""
-        fi
-    fi
-    [[ -z "$cached" ]] && return 0
-
     local dom
-    dom=$(printf '%s' "$cached" | jq -r '.["dudefilms"] // empty' 2>/dev/null || true)
-    [[ -z "$dom" || "$dom" == "null" ]] && return 0
-    dom="${dom%/}"
-    dom="${dom## }"
-    if [[ "$dom" != "$_DF_BASE" ]]; then
-        debug "DudeFilms domain rotated: $_DF_BASE → $dom"
-        _DF_BASE="$dom"
-    fi
+    dom=$(sdk_rotate_domain "$_DF_DOMAINS_CACHE_KEY" "$_DF_DOMAINS_URL" \
+        "dudefilms" "$_DF_BASE" "DudeFilms" "$_DF_UA") || return 0
+    [[ -z "$dom" ]] && return 0
+    _DF_BASE="$dom"
 }
-
-# ═══════════════════════════════════════════════════════════════
-# HubCloud drive chain (identical to hdhub4u/4khdhub resolvers)
-# ═══════════════════════════════════════════════════════════════
 
 # Fuzzy host matching — same policy as hdhub4u: match broadly,
 # let verify_streams filter garbage.
 _df_is_stream_candidate() {
-    local link="$1"
-    local lower
-    lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # Hard rejects — these are never streams
-    case "$lower" in
-        *tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*googlesyndication*|*winexch*|*effectivecpm*|*profitableratecpm*|*a-ads*|*khelostar*)
-            return 1 ;;
-    esac
-
-    # User-configured host allowlist wins
-    if [[ -n "$_DF_ALLOW_HOSTS" ]]; then
-        local host allow
-        host=$(printf '%s' "$lower" | sed -E 's|^https?://([^/]+).*|\1|')
-        local -a allow_arr=()
-        IFS=',' read -r -a allow_arr <<< "$_DF_ALLOW_HOSTS"
-        for allow in "${allow_arr[@]}"; do
-            allow="${allow,,}"
-            [[ -n "$allow" && "$host" == *"$allow"* ]] && return 0
-        done
-    fi
-
-    # Known file-host families (substring match = fuzzy across rotated hosts)
-    case "$lower" in
-        *workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*|*gdlink*|*filepress*|*gofile*|*d0000d*|*drop.download*|*dood*|*driveapp*|*gdtot*)
-            return 0 ;;
-    esac
-
-    # Direct media URL heuristic
-    case "$lower" in
-        *.mkv*|*.mp4*|*.webm*|*.m3u8*|*.flv*|*.mov*|*.avi*|*.ts*)
-            return 0 ;;
-    esac
-
-    return 1
+    sdk_is_stream_candidate "$1" "$_DF_ALLOW_HOSTS" "$_DF_REJECT_GLOBS" "$_DF_FAMILY_GLOBS"
 }
 
 _df_quality() {
-    local url="$1"
-    local lower
-    lower=$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')
-    case "$lower" in
-        *2160p*|*4k*) echo "2160p" ;;
-        *1080p*) echo "1080p" ;;
-        *720p*) echo "720p" ;;
-        *480p*) echo "480p" ;;
-        *) echo "auto" ;;
-    esac
+    sdk_quality_suffix "$1"
 }
 
 _df_stream_json() {
+    sdk_stream_json_encoded "dudefilms" "$(sdk_quality_suffix "$1")" "$1"
+}
+
+# Archive hops can be flaky — fetch with one retry before giving up
+_df_fetch_retry() {
     local url="$1"
-    local enc qual
-    enc=$(printf '%s' "$url" | python3 -c '
-import sys, urllib.parse
-print(urllib.parse.quote(sys.stdin.read().strip(), safe=":/?&=%,.+-_()~"))
-' 2>/dev/null || printf '%s' "$url")
-    qual=$(_df_quality "$url")
-    jq -nc --arg u "$enc" --arg q "$qual" '{quality: $q, url: $u, size: "unknown", provider: "dudefilms"}'
-}
-
-# hubcloud.*/drive/ID → #download href → resolver page → direct links
-_df_resolve_drive() {
-    local drive_url="$1"
-    local page href base
-
-    page=$(curl "${_DF_CURL[@]}" "$drive_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    if [[ "$drive_url" == *"hubcloud.php"* ]]; then
-        href="$drive_url"
-    else
-        href=$(printf '%s' "$page" | grep -oE 'id="download" href="[^"]+"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
-        [[ -z "$href" ]] && return 1
-        if [[ "$href" != http* ]]; then
-            base=$(printf '%s' "$drive_url" | sed -E 's|^(https?://[^/]+).*|\1|')
-            href="${base}/${href#/}"
-        fi
-    fi
-
-    _df_resolve_resolver "$href"
-}
-
-# Resolver page (gamerxyt.com/hubcloud.php) → btn links → direct streams
-_df_resolve_resolver() {
-    local resolver_url="$1"
     local page
-
-    page=$(curl "${_DF_CURL[@]}" "$resolver_url" 2>/dev/null) || return 1
-    [[ -z "$page" ]] && return 1
-
-    printf '%s' "$page" | grep -oE '<a[^>]*href="https?://[^"]+"[^>]*class="[^"]*btn[^"]*"' | \
-        sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
-        case "$link" in
-            *pixel.hubcloud.cx*|*gpdl.hubcloud.cx*)
-                _df_resolve_pixel "$link"
-                ;;
-            *pixeldrain*)
-                if [[ "$link" == *"/api/file/"* || "$link" == *"download"* ]]; then
-                    printf '%s\n' "$link"
-                else
-                    local pd_base pd_id
-                    pd_base=$(printf '%s' "$link" | sed -E 's|^(https?://[^/]+).*|\1|')
-                    pd_id="${link##*/}"
-                    printf '%s\n' "${pd_base}/api/file/${pd_id}?download"
-                fi
-                ;;
-            *)
-                if _df_is_stream_candidate "$link"; then
-                    printf '%s\n' "$link"
-                fi
-                ;;
-        esac
-    done
-}
-
-# pixel/gpdl redirector → real link (double-atob / dl.php?link= extraction)
-_df_resolve_pixel() {
-    local pixel_url="$1"
-    local page dl_url final url_eff tmpbody
-    tmpbody=$(mktemp)
-    page=$(curl "${_DF_CURL[@]}" -o "$tmpbody" -w '%{url_effective}' "$pixel_url" 2>/dev/null || true)
-    url_eff="$page"
-    page=$(cat "$tmpbody" 2>/dev/null || true)
-    rm -f "$tmpbody"
-    dl_url=$(printf '%s' "$page" | grep -oE 'https?://[^"'"'"' ]*dl\.php\?link=[^"'"'"' ]+' | head -1 2>/dev/null || true)
-    if [[ -z "$dl_url" && "$url_eff" == *"dl.php?link="* ]]; then
-        dl_url="$url_eff"
+    page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$url" 2>/dev/null || true)
+    if [[ -z "$page" ]]; then
+        sleep 1
+        page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$url" 2>/dev/null || true)
     fi
-    [[ -z "$dl_url" ]] && return 1
-    final=$(printf '%s' "$dl_url" | sed -E 's/.*link=//' | python3 -c 'import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))' 2>/dev/null || true)
-    [[ -z "$final" ]] && return 1
-    printf '%s\n' "$final"
+    printf '%s' "$page"
 }
 
-# Any hubcloud-family link → drive chain
+# Any hubcloud-family link → drive chain (SDK-backed)
+_df_resolve_drive() {
+    sdk_resolve_drive "$1" _df_is_stream_candidate 1 "$_DF_PIXEL_GLOBS"
+}
+
 _df_resolve_hubcloud() {
     local url="$1"
     case "$url" in
@@ -257,12 +115,7 @@ _df_resolve_archive() {
     local arch_url="$1"
     local page
 
-    # Archive hop can be flaky — retry once before giving up
-    page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
-    if [[ -z "$page" ]]; then
-        sleep 1
-        page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
-    fi
+    page=$(_df_fetch_retry "$arch_url")
     [[ -z "$page" ]] && return 1
 
     # All external download links, resolved per family
@@ -289,12 +142,7 @@ _df_resolve_archive_episode() {
     local want_ep="$2"
     local page
 
-    # Archive hop can be flaky — retry once
-    page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
-    if [[ -z "$page" ]]; then
-        sleep 1
-        page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$arch_url" 2>/dev/null || true)
-    fi
+    page=$(_df_fetch_retry "$arch_url")
     [[ -z "$page" ]] && return 1
 
     # Extract the anchor for the wanted episode number (zero-padded label)
@@ -403,52 +251,45 @@ plugin_search() {
     html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
     [[ -z "$html" ]] && return 1
 
-    # WordPress search results: article links + titles.
-    # Relevance filter: WordPress falls back to the recent-posts grid when a
-    # query matches nothing (e.g. "kgf" vs dotted titles "K.G.F") — those
-    # unrelated rows must not surface in the CLI. Keep only results whose
-    # normalized title matches ALL significant query tokens (single shared
-    # token is too loose: "all of us are dead" would match any title
-    # containing "dead"), or contains the full normalized query.
+    # WordPress search results: article links + titles with relevance filter.
     local wp_results
     wp_results=$(_df_parse_search_page "$html" "$query")
 
-    # Cinemeta fallback: when the WP site search returns sparse results
-    # (title mismatch between the user query and the site title), query
-    # Cinemeta for the canonical title+year and re-search the site with it.
-    # Same shape as 4khdhub's fallback; REQUIRED print at the end (the
-    # 9a21514 refactor wrapped the parser output in a variable and never
-    # emitted it — dudefilms search returned nothing since Aug 10 2026).
-    local wp_count
-    wp_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
-    if [[ "$wp_count" -lt 2 ]]; then
-        source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
-        set +euo pipefail
-        local cm_all cm_tmp cm_rows
-        cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
-        if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
-            cm_tmp=$(mktemp)
-            cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
-            while IFS= read -r meta; do
-                [[ -z "$meta" ]] && continue
-                local cname cyear ctype site_html cres
-                cname=$(printf '%s' "$meta" | jq -r '.name // ""')
-                cyear=$(printf '%s' "$meta" | jq -r '.releaseInfo // ""')
-                ctype=$(printf '%s' "$meta" | jq -r '.type // "movie"')
-                [[ -z "$cname" ]] && continue
-                site_html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
-                [[ -z "$site_html" ]] && continue
-                cres=$(_df_parse_search_page "$site_html" "${cname} ${cyear}")
-                [[ -n "$cres" && "$cres" != "[]" ]] && printf '%s\n' "$cres" >> "$cm_tmp"
-            done <<< "$cm_rows"
-            if [[ -s "$cm_tmp" ]]; then
-                wp_results=$(printf '%s\n%s' "$wp_results" "$(jq -s '.' "$cm_tmp" 2>/dev/null)" \
-                    | jq -s 'flatten | unique_by(.id)' 2>/dev/null || printf '%s' "$wp_results")
-            fi
-            rm -f "$cm_tmp"
-        fi
+    # Cinemeta fallback (shared orchestrator): when the WP site search
+    # returns sparse results (title mismatch between the user query and the
+    # site title), re-search the site by canonical title+year.
+    cinemeta_search_fallback "$query" "$wp_results" _df_research_site
+}
+
+# Cinemeta research callback: WP ?s= re-search by canonical title+year.
+_df_research_site() {
+    local cname="$1" cyear="$2"
+    local site_html cres
+    site_html=$(curl "${_DF_CURL[@]}" -G "${_DF_BASE}/" --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
+    [[ -z "$site_html" ]] && return 0
+    _df_parse_search_page "$site_html" "${cname} ${cyear}"
+}
+
+# Fan-out worker: resolve ONE archive page into stream JSON objects.
+_df_get_url_worker() {
+    local link="$1"
+    local streams=""
+    if [[ -n "${DF_WORKER_EPISODE:-}" ]]; then
+        # Per-episode: pick the Nth maxbutton-ep anchor from the archive
+        streams=$(_df_resolve_archive_episode "$link" "$DF_WORKER_EPISODE") || true
+        # Season packs have no per-episode markers — fall back to all
+        # archive download links (hubcloud, driveapp, etc.)
+        [[ -z "$streams" ]] && streams=$(_df_resolve_archive "$link") || true
+    else
+        streams=$(_df_resolve_archive "$link") || true
     fi
-    printf '%s' "$wp_results"
+    [[ -z "$streams" ]] && return 0
+    local su
+    while IFS= read -r su; do
+        [[ -z "$su" ]] && continue
+        [[ "${su,,}" == *sample* ]] && continue
+        _df_stream_json "$su"
+    done <<< "$streams"
 }
 
 plugin_get_url() {
@@ -500,41 +341,12 @@ for l in links:
     fi
     [[ -z "$arch_links" ]] && die_plugin "No archive links on DudeFilms page for: $id"
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    local pids=() idx=0
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        (
-            local streams=""
-            if [[ -n "$episode" ]]; then
-                # Per-episode: pick the Nth maxbutton-ep anchor from the archive
-                streams=$(_df_resolve_archive_episode "$link" "$episode" 2>/dev/null || true)
-                # Season packs have no per-episode markers — fall back to all
-                # archive download links (hubcloud, driveapp, etc.)
-                [[ -z "$streams" ]] && streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
-            else
-                streams=$(_df_resolve_archive "$link" 2>/dev/null || true)
-            fi
-            if [[ -n "$streams" ]]; then
-                printf '%s\n' "$streams" | while IFS= read -r su; do
-                    [[ -z "$su" ]] && continue
-                    [[ "${su,,}" == *sample* ]] && continue
-                    _df_stream_json "$su"
-                done > "$tmp_dir/out_${idx}.json"
-            fi
-        ) &
-        pids+=($!)
-        idx=$((idx + 1))
-    done <<< "$arch_links"
-
-    wait "${pids[@]}" 2>/dev/null || true
-
-    local merged="[]"
-    if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
-        merged=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s '.' 2>/dev/null) || merged="[]"
-    fi
-    rm -rf "$tmp_dir"
+    DF_WORKER_EPISODE="$episode"
+    local -a _links=()
+    mapfile -t _links <<< "$arch_links"
+    local merged
+    merged=$(sdk_fanout _df_get_url_worker "${_links[@]}")
+    unset DF_WORKER_EPISODE
 
     [[ -z "$merged" || "$merged" == "[]" ]] && die_plugin "No playable links resolved for: $id"
     printf '%s\n' "$merged"
@@ -562,11 +374,12 @@ plugin_list_seasons() {
         s1=$(printf '%s' "$range" | awk '{print $1}')
         s2=$(printf '%s' "$range" | awk '{print $2}')
         if [[ -n "$s1" && -n "$s2" && "$s2" -gt "$s1" ]]; then
-            seasons_json="[]"
-            local i
+            # Batched JSONL → one jq pass (was one fork per season)
+            local lines="" i
             for (( i = s1; i <= s2; i++ )); do
-                seasons_json=$(printf '%s' "$seasons_json" | jq -c --argjson n "$i" '. + [{"id": ($n|tostring), "title": ("Season " + ($n|tostring)), "number": $n}]' 2>/dev/null)
+                lines+="$(jq -nc --argjson n "$i" '{"id": ($n|tostring), "title": ("Season " + ($n|tostring)), "number": $n}')"$'\n'
             done
+            seasons_json=$(jq -s '.' <<< "$lines")
         fi
     fi
 
@@ -592,23 +405,19 @@ plugin_list_episodes() {
         local first_arch
         first_arch=$(printf '%s\n' "$arch_links" | head -1)
         local arch_page
-        arch_page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$first_arch" 2>/dev/null || true)
-        if [[ -z "$arch_page" ]]; then
-            sleep 1
-            arch_page=$(curl "${_DF_CURL[@]}" -H "Referer: ${_DF_BASE}/" "$first_arch" 2>/dev/null || true)
-        fi
+        arch_page=$(_df_fetch_retry "$first_arch")
         ep_count=$(printf '%s' "$arch_page" | grep -oE 'Episode[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | tail -1 2>/dev/null || echo 0)
         [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$arch_page" | grep -cE 'maxbutton-ep' 2>/dev/null || true)
     fi
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
 
-    # Emit one episode entry per found episode (contract field is "episode")
-    local i eps_json="[]"
+    # Emit one episode entry per found episode — batched JSONL, one jq pass
+    local lines="" i
     for (( i = 1; i <= ep_count; i++ )); do
-        eps_json=$(printf '%s' "$eps_json" | jq -c --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
-            '. + [{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}]' 2>/dev/null)
+        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
+            '{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}')"$'\n'
     done
-    printf '%s\n' "$eps_json"
+    jq -s '.' <<< "$lines"
 }
 
 plugin_health() {
