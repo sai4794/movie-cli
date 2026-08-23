@@ -504,33 +504,36 @@ search_and_play() {
         local season_count=${#season_ids[@]}
         local selected_season_number="1"
 
-        if (( season_count > 0 )); then
-            local selected_season_title
-            if (( season_count == 1 )); then
-                selected_season_title="${season_titles[0]}"
-            else
-                # Add a Back entry; selecting it returns to the title list
-                select_item "Select season: " "${season_titles[@]}" "<- Back" || exit 130
-            selected_season_title="$_SELECT_ITEM_RESULT"
-                [[ "$selected_season_title" == "<- Back" ]] && continue
+        # 2..3. Season -> Episode inner loop: episode "<- Back" must land
+        # back at SEASON selection, not the outer title list.
+        while true; do
+            # Re-select season each iteration (episode Back lands here)
+            if (( season_count > 0 )); then
+                local selected_season_title
+                if (( season_count == 1 )); then
+                    selected_season_title="${season_titles[0]}"
+                else
+                    select_item "Select season: " "${season_titles[@]}" "<- Back" || exit 130
+                    selected_season_title="$_SELECT_ITEM_RESULT"
+                    [[ "$selected_season_title" == "<- Back" ]] && continue 2   # back to titles
+                fi
+
+                # Get the season number
+                local k=0
+                for t in "${season_titles[@]}"; do
+                    if [[ "$t" == "$selected_season_title" ]]; then
+                        selected_season_number="${season_numbers[$k]}"
+                        break
+                    fi
+                    (( ++k ))
+                done
             fi
 
-            # Get the season number
-            local k=0
-            for t in "${season_titles[@]}"; do
-                if [[ "$t" == "$selected_season_title" ]]; then
-                    selected_season_number="${season_numbers[$k]}"
-                    break
-                fi
-                (( ++k ))
-            done
-        fi
-
-        # 2. Get episodes
-        status_msg "Fetching episodes..."
-        local episodes
-        episodes=$(plugin_list_episodes "$selected_id" "$selected_season_number" 2>/dev/null) || episodes="[]"
-        spinner_stop
+            # 2. Get episodes
+            status_msg "Fetching episodes..."
+            local episodes
+            episodes=$(plugin_list_episodes "$selected_id" "$selected_season_number" 2>/dev/null) || episodes="[]"
+            spinner_stop
 
         local -a episode_titles=() episode_ids=() episode_seasons=() episode_numbers=()
         while IFS= read -r line; do
@@ -556,6 +559,7 @@ search_and_play() {
         local selected_episode_title
         select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
         selected_episode_title="$_SELECT_ITEM_RESULT"
+        # "<- Back" → season selection (inner loop top)
         [[ "$selected_episode_title" == "<- Back" ]] && continue
 
         local ep_idx=""
@@ -675,9 +679,11 @@ search_and_play() {
                     break
                     ;;
             esac
-        done
-        exit 0
-    fi
+        done   # end playback loop
+        continue 2   # "quit" → back to SEASON selection (inner loop top)
+    done   # end season/episode inner loop
+    exit 0
+fi
 
     # Movie playback flow
     status_msg "Resolving streams..."
