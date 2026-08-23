@@ -356,15 +356,27 @@ search_and_play() {
             prof_start "search"
             status_msg "Searching all plugins..."
             local merged_results="[]"
+            local pids=() idx=0
+            local tmp_dir
+            tmp_dir=$(mktemp -d)
             for p_name in "${!LOADED_PLUGINS[@]}"; do
-                source "${LOADED_PLUGINS[$p_name]}"
-                local p_res
-                p_res=$(plugin_search "$query" "$quality" 2>/dev/null || printf '[]')
-                if [[ -n "$p_res" && "$p_res" != "[]" ]]; then
-                    p_res=$(printf '%s' "$p_res" | jq --arg p "$p_name" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
-                    merged_results=$(printf '%s\n%s' "$merged_results" "$p_res" | jq -s 'add' 2>/dev/null || printf '[]')
-                fi
+                (
+                    source "${LOADED_PLUGINS[$p_name]}"
+                    local p_res
+                    p_res=$(plugin_search "$query" "$quality" 2>/dev/null || printf '[]')
+                    if [[ -n "$p_res" && "$p_res" != "[]" ]]; then
+                        p_res=$(printf '%s' "$p_res" | jq --arg p "$p_name" 'map(.plugin = $p)' 2>/dev/null || printf '[]')
+                    fi
+                    printf '%s\n' "$p_res" > "$tmp_dir/out_${idx}.json"
+                ) &
+                pids+=($!)
+                idx=$((idx + 1))
             done
+            wait "${pids[@]}" 2>/dev/null || true
+            if compgen -G "$tmp_dir/out_*.json" > /dev/null 2>&1; then
+                merged_results=$(cat "$tmp_dir"/out_*.json 2>/dev/null | jq -s 'add' 2>/dev/null || printf '[]')
+            fi
+            rm -rf "$tmp_dir"
             results="$merged_results"
             spinner_stop
             [[ -z "$results" || "$results" == "[]" ]] && die_plugin "No results for: $query"
