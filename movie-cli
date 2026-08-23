@@ -553,14 +553,25 @@ search_and_play() {
         done < <(printf '%s' "$episodes" | jq -r '.[].episode' 2>/dev/null)
 
         local ep_count=${#episode_ids[@]}
-        (( ep_count == 0 )) && { ui_error "No episodes found for season $selected_season_number — pick another."; continue; }
+        if (( ep_count == 0 )); then
+            ui_error "No episodes found for season $selected_season_number — pick another."
+            (( season_count > 1 )) && continue || continue 2
+        fi
 
         # 3. Select episode (with Back → season selection)
         local selected_episode_title
         select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
         selected_episode_title="$_SELECT_ITEM_RESULT"
-        # "<- Back" → season selection (inner loop top)
-        [[ "$selected_episode_title" == "<- Back" ]] && continue
+        # "<- Back": multi-season → season menu; single-season → titles
+        # (there is no season menu to return to — otherwise Back loops
+        # straight back into the same episode list forever).
+        if [[ "$selected_episode_title" == "<- Back" ]]; then
+            if (( season_count > 1 )); then
+                continue
+            else
+                continue 2
+            fi
+        fi
 
         local ep_idx=""
         local k=0
@@ -680,9 +691,13 @@ search_and_play() {
                     ;;
             esac
         done   # end playback loop
-        continue 2   # "quit" → back to SEASON selection (inner loop top)
-    done   # end season/episode inner loop
-    exit 0
+                if (( season_count > 1 )); then
+                    continue   # back to SEASON selection (inner loop top)
+                else
+                    continue 2   # single season: no menu to return to → titles
+                fi
+            done   # end season/episode inner loop
+            exit 0
 fi
 
     # Movie playback flow
