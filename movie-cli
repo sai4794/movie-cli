@@ -445,9 +445,13 @@ search_and_play() {
     fi
 
     local selected_display
+    # NAV LOOP: title -> [season -> [episode -> [stream]]]. "<- Back" walks
+    # up one level; "no streams" sends the user back instead of exiting.
+    while true; do
     select_item "Select: " "${display_titles[@]}" || exit 130
     selected_display="$_SELECT_ITEM_RESULT"
     SELECT_N=""
+    [[ "$selected_display" == "<- Back" ]] && { ui_info "Exiting."; exit 0; }
 
     local selected_id="" selected_type="" selected_plugin_match="" selected_title=""
     i=0
@@ -461,7 +465,7 @@ search_and_play() {
         fi
         i=$((i + 1))
     done
-    [[ -n "$selected_id" ]] || die_plugin "No ID for selection"
+    [[ -n "$selected_id" ]] || { ui_error "No ID for selection — pick again."; continue; }
 
     # Source the selected plugin once for all subsequent calls
     unset -f plugin_search plugin_get_url plugin_list_seasons plugin_list_episodes \
@@ -478,6 +482,11 @@ search_and_play() {
         local seasons
         seasons=$(plugin_list_seasons "$selected_id" 2>/dev/null) || seasons="[]"
         spinner_stop
+
+        if [[ -z "$seasons" || "$seasons" == "[]" ]]; then
+            ui_error "No seasons found for: $selected_title"
+            continue   # back to title selection
+        fi
 
         local -a season_titles=() season_ids=() season_numbers=()
         while IFS= read -r line; do
@@ -500,8 +509,10 @@ search_and_play() {
             if (( season_count == 1 )); then
                 selected_season_title="${season_titles[0]}"
             else
-                select_item "Select season: " "${season_titles[@]}" || exit 130
+                # Add a Back entry; selecting it returns to the title list
+                select_item "Select season: " "${season_titles[@]}" "<- Back" || exit 130
             selected_season_title="$_SELECT_ITEM_RESULT"
+                [[ "$selected_season_title" == "<- Back" ]] && continue
             fi
 
             # Get the season number
@@ -539,12 +550,13 @@ search_and_play() {
         done < <(printf '%s' "$episodes" | jq -r '.[].episode' 2>/dev/null)
 
         local ep_count=${#episode_ids[@]}
-        (( ep_count == 0 )) && die_plugin "No episodes found for season $selected_season_number"
+        (( ep_count == 0 )) && { ui_error "No episodes found for season $selected_season_number — pick another."; continue; }
 
-        # 3. Select episode
+        # 3. Select episode (with Back → season selection)
         local selected_episode_title
-        select_item "Select episode: " "${episode_titles[@]}" || exit 130
+        select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
         selected_episode_title="$_SELECT_ITEM_RESULT"
+        [[ "$selected_episode_title" == "<- Back" ]] && continue
 
         local ep_idx=""
         local k=0
@@ -572,7 +584,14 @@ search_and_play() {
              qualities_json=$(sort_streams "$qualities_json")
              qualities_json=$(verify_streams "$qualities_json")
                          spinner_stop
-            [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No streams for: $selected_title - $ep_title"
+            if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]]; then
+                ui_error "No streams for: $selected_title - $ep_title"
+                local back_choice
+                select_item "What next? " "<- Back to episodes" "Try again" || continue
+                back_choice="$_SELECT_ITEM_RESULT"
+                [[ "$back_choice" == "Try again" ]] && continue
+                break   # Back to episodes
+            fi
 
             # Stream selection for series episodes
             local -a ep_streams=()
@@ -580,11 +599,14 @@ search_and_play() {
                 [[ -n "$obj" ]] && ep_streams+=("$obj")
             done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
 
-            (( ${#ep_streams[@]} == 0 )) && die_plugin "No streams for: $selected_title - $ep_title"
+            (( ${#ep_streams[@]} == 0 )) && { ui_error "No streams for: $selected_title - $ep_title"; break; }
 
             local selected_stream
-            select_stream "Select stream: " "${ep_streams[@]}" || die_plugin "No stream selected"
+            select_stream "Select stream (or <- Back): " "${ep_streams[@]}" "<- Back" || die_plugin "No stream selected"
             selected_stream="$_SELECT_ITEM_RESULT"
+            if [[ "$selected_stream" == "<- Back" ]]; then
+                break   # back to episode selection
+            fi
 
             local selected_url
             selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
@@ -661,26 +683,42 @@ search_and_play() {
     status_msg "Resolving streams..."
     prof_start "stream_resolution"
     local qualities_json
-    qualities_json=$(plugin_get_url "$selected_id" "$quality")
-    qualities_json=$(sort_streams "$qualities_json")
-    qualities_json=$(verify_streams "$qualities_json")
+    qualities_json=$(plugin_get_url "$selected_id" "$quality" 2>/dev/null)
+    if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] || [[ "$(printf '%s' "$qualities_json" | verify_streams 2>/dev/null)" == "[]" ]]; then
+        qualities_json=$(verify_streams "$(sort_streams "$qualities_json")" 2>/dev/null)
+    fi
     prof_end
-        spinner_stop
 
-    [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] && die_plugin "No video URL for: $selected_title"
+    spinner_stop
 
-    # Stream selection: extract individual stream objects from JSON array
+    # No streams → offer retry / back to title selection instead of exiting
     local -a streams=()
-    while IFS= read -r obj; do
-        [[ -n "$obj" ]] && streams+=("$obj")
-    done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
-
-    (( ${#streams[@]} == 0 )) && die_plugin "No streams for: $selected_title"
+    collect_movie_streams() {
+        streams=()
+        while IFS= read -r obj; do
+            [[ -n "$obj" ]] && streams+=("$obj")
+        done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
+    }
+    collect_movie_streams
+    while (( ${#streams[@]} == 0 )); do
+        ui_error "No streams found for: $selected_title"
+        local mv_choice
+        select_item "What next? " "Try again" "<- Back to search results" || exit 130
+        mv_choice="$_SELECT_ITEM_RESULT"
+        [[ "$mv_choice" == "<- Back to search results" ]] && { MOVIE_BACK=1; break; }
+        status_msg "Resolving streams... (retry)"
+        qualities_json=$(plugin_get_url "$selected_id" "$quality" 2>/dev/null)
+        qualities_json=$(sort_streams "$qualities_json")
+        qualities_json=$(verify_streams "$qualities_json")
+        collect_movie_streams
+    done
+    [[ "${MOVIE_BACK:-0}" == "1" ]] && { unset MOVIE_BACK; continue; }
 
     # Select stream (auto-plays if only one)
     local selected_stream
-    select_stream "Select stream: " "${streams[@]}" || die_plugin "No stream selected"
+    select_stream "Select stream (or <- Back): " "${streams[@]}" "<- Back" || die_plugin "No stream selected"
     selected_stream="$_SELECT_ITEM_RESULT"
+    [[ "$selected_stream" == "<- Back" ]] && continue
 
     local selected_url
     selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
@@ -698,6 +736,7 @@ search_and_play() {
     local end_pos
     end_pos=$(get_mpv_position 2>/dev/null || echo 0)
     (( end_pos > 0 )) && history_update_progress "$selected_id" "$end_pos" "$end_pos" || true
+    done   # end of title-selection NAV LOOP (movie path: play → exit; series: exits after loop)
 }
 
 # ═══════════════════════════════════════════════════════════════
