@@ -669,8 +669,12 @@ search_and_play() {
                     ;;
                 select)
                     local new_ep_title
-                    select_item "Select episode: " "${episode_titles[@]}" || exit 130
+                    # "<- Back" → season selection (or titles if single season)
+                    select_item "Select episode: " "${episode_titles[@]}" "<- Back" || exit 130
                     new_ep_title="$_SELECT_ITEM_RESULT"
+                    if [[ "$new_ep_title" == "<- Back" ]]; then
+                        (( season_count > 1 )) && continue || continue 2
+                    fi
                     local m=0
                     for t in "${episode_titles[@]}"; do
                         if [[ "$t" == "$new_ep_title" ]]; then
@@ -682,8 +686,9 @@ search_and_play() {
                     ;;
                 "change quality")
                     local changed_stream
-                    select_stream "Select quality: " "${ep_streams[@]}" || continue
+                    select_stream "Select quality: " "${ep_streams[@]}" "<- Back" || continue
                     changed_stream="$_SELECT_ITEM_RESULT"
+                    [[ "$changed_stream" == "<- Back" ]] && continue
                     quality=$(printf '%s' "$changed_stream" | jq -r '.quality // "auto"' 2>/dev/null)
                     ;;
                 quit)
