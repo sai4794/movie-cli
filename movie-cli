@@ -142,7 +142,7 @@ _verify_stream_probe() {
     elif [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
         referer_arg=(-H "Referer: https://vidlink.pro/")
     fi
-    local http_code hex
+    local http_code hex head_bytes
     # Curl 1: get first 16 bytes for content check
     # NOTE: plain GET (no Range) — mirrors mpv's request shape. Some
     # workers.dev proxies serve the first 1024 bytes on a Range probe
@@ -151,10 +151,15 @@ _verify_stream_probe() {
     # head -c 16 closes the pipe → curl gets SIGPIPE → bounded. Do NOT
     # add --max-filesize here: it aborts pre-transfer on large
     # Content-Length and returns empty hex.
-    hex=$(curl -s \
+    # Capture bytes first, then decode: xxd ships with vim and is missing
+    # on some BusyBox/minimal userlands (e.g. iOS/iSH images) — without a
+    # fallback an empty hex silently rejects every live stream as dead.
+    head_bytes=$(curl -s \
         -L --connect-timeout 4 --max-time 8 \
         "${referer_arg[@]}" \
-        "$url" 2>/dev/null | head -c 16 | xxd -p 2>/dev/null)
+        "$url" 2>/dev/null | head -c 16)
+    hex=$(printf '%s' "$head_bytes" | xxd -p 2>/dev/null)
+    [[ -z "$hex" ]] && hex=$(printf '%s' "$head_bytes" | od -An -tx1 | tr -d ' \n')
     # Curl 2: get HTTP status code
     # --max-filesize: some servers stream the whole file (fsl-buckets,
     # googleusercontent). Curl aborts with rc 63 (or 28 on max-time)
@@ -349,8 +354,10 @@ check_deps() {
     done
 
     # ponytail: Android uses mpv-android via Play Store + intent launch,
-    # not a CLI binary in $PATH. Skip player check on Termux.
-    if [[ ! -d "/data/data/com.termux" ]]; then
+    # not a CLI binary in $PATH. iOS is the same class of platform: no CLI
+    # player binaries exist and playback hands off to an external app via a
+    # URL opener (see _ios_launch). Skip player check on both.
+    if [[ "$_MC_PLATFORM" != "termux" && "$_MC_PLATFORM" != "ios" ]]; then
         local player_found=0
         for cmd in mpv vlc iina; do
             command -v "$cmd" &>/dev/null && player_found=1

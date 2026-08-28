@@ -30,6 +30,39 @@ QUIET="${QUIET:-0}"
 NO_COLOR="${NO_COLOR:-0}"
 
 # ═══════════════════════════════════════════════════════════════
+# Platform Detection (computed once, read-only afterwards)
+# ═══════════════════════════════════════════════════════════════
+# ponytail: playback hand-off differs per OS — Termux launches mpv-android
+# via `am start`, iOS has no child-process players at all and must hand the
+# URL to an external app through a URL opener. Everything else runs a CLI
+# player binary directly.
+# MOVIE_CLI_PLATFORM=<termux|ios|linux|macos> overrides autodetection.
+detect_platform() {
+    if [[ -n "${MOVIE_CLI_PLATFORM:-}" ]]; then
+        printf '%s' "$MOVIE_CLI_PLATFORM"
+        return
+    fi
+    # Termux sets TERMUX_VERSION; older setups only had the data dir
+    if [[ -d "/data/data/com.termux" || -n "${TERMUX_VERSION:-}" ]]; then
+        printf 'termux'
+        return
+    fi
+    # iSH (Alpine-on-iOS) emulates a Linux kernel whose release string ends
+    # in "-ish" (e.g. 5.9.0-ish). Plain Linux never matches.
+    local _rel
+    _rel=$(uname -r 2>/dev/null || true)
+    if [[ "$_rel" == *-ish* ]]; then
+        printf 'ios'
+        return
+    fi
+    case "$(uname -s 2>/dev/null)" in
+        Darwin) printf 'macos' ;;
+        *)      printf 'linux' ;;
+    esac
+}
+_MC_PLATFORM="$(detect_platform)"
+
+# ═══════════════════════════════════════════════════════════════
 # Trap Handlers
 # ═══════════════════════════════════════════════════════════════
 cleanup() {

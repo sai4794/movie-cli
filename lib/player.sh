@@ -13,8 +13,9 @@ validate_player() {
         die_player "Invalid player: $player (allowed: $_VALID_PLAYERS)"
     fi
     # ponytail: Android uses mpv-android via Play Store + intent launch,
-    # not a CLI binary in $PATH. Skip binary check on Termux.
-    if [[ -d "/data/data/com.termux" ]]; then
+    # not a CLI binary in $PATH. Same for iOS (external-app hand-off).
+    # Skip binary check on both.
+    if [[ "$_MC_PLATFORM" == "termux" || "$_MC_PLATFORM" == "ios" ]]; then
         return 0
     fi
     if ! command -v "$player" &>/dev/null; then
@@ -39,6 +40,28 @@ _android_escape_uri() {
     python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=":/?&=%+-._~"))' "$raw" 2>/dev/null || printf '%s\n' "$raw"
 }
 
+# ponytail: resolve 302 redirects before hand-off — mobile players don't
+# all follow them, but terminal mpv does. Proxy URLs (p.111477.xyz, etc.)
+# 302 to CDN. Use the raw URL (not yet URI-encoded) so curl sees the real
+# endpoint. Pass Referer if required — some CDNs validate it even on HEAD
+# requests. Prints the effective URL; echoes the input back unchanged on
+# failure or when no redirect happened.
+_mc_resolve_redirect() {
+    local url="$1"
+    local referrer="${2:-}"
+    local -a redirect_headers=()
+    [[ -n "$referrer" ]] && redirect_headers+=(-H "Referer: $referrer")
+    local resolved_url
+    resolved_url=$(curl -4 -g -sL --range 0-0 --connect-timeout 5 --max-time 15 \
+        -o /dev/null -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null)
+    if [[ -n "$resolved_url" && "$resolved_url" != "$url" ]]; then
+        debug "Redirect resolved: $url -> $resolved_url"
+        printf '%s' "$resolved_url"
+    else
+        printf '%s' "$url"
+    fi
+}
+
 # ponytail: try launching URL via Android implicit VIEW intent.
 # No hardcoded activities — Android resolves the best handler.
 # Returns 0 on success.
@@ -49,20 +72,9 @@ _android_launch() {
     local referrer="${4:-}"
     local _am_rc=0 _am_err=""
 
-    # ponytail: resolve 302 redirects — mpv-android doesn't follow them,
-    # but terminal mpv does. Proxy URLs (p.111477.xyz, etc.) 302 to CDN.
-    # Use the raw URL (not yet URI-encoded) so curl sees the real endpoint.
-    # Pass Referer if required — some CDNs validate it even on HEAD requests.
-    local final_url="$url"
-    local -a redirect_headers=()
-    [[ -n "$referrer" ]] && redirect_headers+=(-H "Referer: $referrer")
-    local resolved_url
-    resolved_url=$(curl -4 -g -sL --range 0-0 --connect-timeout 5 --max-time 15 \
-        -o /dev/null -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null)
-    if [[ -n "$resolved_url" && "$resolved_url" != "$url" ]]; then
-        debug "Redirect resolved: $url -> $resolved_url"
-        final_url="$resolved_url"
-    fi
+    # Resolve redirects first, then URI-encode exactly once.
+    local final_url
+    final_url=$(_mc_resolve_redirect "$url" "$referrer")
 
     # ponytail: URI-encode exactly once, after all redirects are resolved.
     local intent_url
@@ -101,6 +113,71 @@ _android_launch() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# iOS URL Launch
+# ═══════════════════════════════════════════════════════════════
+
+# ponytail: iOS sandboxes every app — one app cannot spawn another as a
+# child process, so there is no mpv/vlc binary to exec and no desktop
+# process model. The only hand-off mechanism is a URL opener exposed by
+# the terminal host itself. Known openers: Blink Shell `openurl`/`open`,
+# a-Shell `open` (a-Shell can't run bash at all, listed for completeness).
+# iSH ships none — set MOVIE_CLI_OPENER=<cmd> if your setup provides one.
+#
+# Hard platform limits (NOT fixable in-script, mirrors of Android's -W):
+#   * fire-and-forget: no opener API reports playback exit status, so
+#     NO_DETACH blocking is impossible on iOS.
+#   * start_time/referrer cannot be passed as intent extras; resume and
+#     CDN referer workarounds are best-effort (VLC scheme ignores them).
+_ios_launch() {
+    local url="$1"
+    local start_time="${2:-}"
+    local referrer="${3:-}"
+
+    # Resolve 302 redirects first (same rationale as Android: the handler
+    # receives the literal URL we pass).
+    local final_url
+    final_url=$(_mc_resolve_redirect "$url" "$referrer")
+
+    # VLC-iOS registers the vlc:// scheme: vlc://<http-url> opens straight
+    # into its player instead of Safari. Plain https first (Safari plays
+    # m3u8/mp4 natively), vlc:// as retry.
+    local opener="" c
+    local -a candidates=()
+    [[ -n "${MOVIE_CLI_OPENER:-}" ]] && candidates+=("$MOVIE_CLI_OPENER")
+    candidates+=(openurl open)
+
+    for c in "${candidates[@]}"; do
+        if command -v "$c" &>/dev/null; then
+            opener="$c"
+            break
+        fi
+    done
+
+    if [[ -z "$opener" ]]; then
+        warn "No iOS URL opener found (tried: ${candidates[*]})."
+        warn "Playback needs a terminal that exposes one: Blink Shell (openurl),"
+        warn "or set MOVIE_CLI_OPENER=<command>. Stock iSH has no built-in opener."
+        return 1
+    fi
+
+    debug "iOS launch via $opener: $final_url"
+    if "$opener" "$final_url" >/dev/null 2>&1; then
+        debug "URL handed off successfully"
+        [[ -n "$start_time" ]] && debug "iOS: resume position not passed (opener has no extras API)"
+        return 0
+    fi
+
+    debug "plain open failed — retrying via vlc:// scheme"
+    if "$opener" "vlc://$final_url" >/dev/null 2>&1; then
+        debug "vlc:// hand-off succeeded"
+        return 0
+    fi
+
+    warn "$opener failed to open stream URL"
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════
 # Play Video
 # Args: $1=url, $2=start_time (optional)
 # ═══════════════════════════════════════════════════════════════
@@ -134,6 +211,14 @@ play_video() {
     local referrer=""
     if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
         referrer="https://vidlink.pro/"
+    fi
+
+    # ponytail: iOS — no child-process players exist in any terminal app;
+    # hand the URL to the OS opener instead of exec'ing $player. This must
+    # run BEFORE the per-player case so it never writes mpv lua/IPC files.
+    if [[ "$_MC_PLATFORM" == "ios" ]]; then
+        _ios_launch "$url" "$start_time" "$referrer"
+        return $?
     fi
 
     local cmd=("$player")
