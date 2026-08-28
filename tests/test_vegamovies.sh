@@ -181,6 +181,57 @@ Season 1 <a href="https://nexdrive.fit/genxfm1/">links</a>
     [ "$status" -eq 0 ]
 }
 
+@test "VegaMovies hub page: season URL extracted and resolver links followed" {
+    # 2026-08 redesign: series posts are HUB pages (season headings + Download
+    # Now buttons, NO nexdrive links). The resolver links live on each season's
+    # dedicated page. Verify _vm_is_hub_page detects the hub, _vm_hub_season_url
+    # maps season N to its page, and get_url follows through to resolve.
+    local HUB='<html><body>
+<h5>Season 1 Single Episodes</h5>
+<a href="/download-show-season-1-hindi-480p/" rel="nofollow"><button class="dwd-button">Download Now</button></a>
+<h5>Season 2 Single Episodes</h5>
+<a href="/download-show-season-2-hindi-720p/" rel="nofollow"><button class="dwd-button">Download Now</button></a>
+</body></html>'
+    local SEASON_PAGE='<html><body>
+Season 2
+<a href="https://nexdrive.fit/genxfm123456/">V-Cloud</a>
+</body></html>'
+    local EP_PAGE='<html><body>
+-:Episodes: 1:- <a href="https://vcloud.fit/ep1link">
+</body></html>'
+    # _vm_resolve_vcloud fetches the vcloud.fit page via `curl -sL` and takes
+    # the direct-link branch when an r2.cloudflarestorage URL is present.
+    local VCLOUD_PAGE='<html><body>
+<a href="https://abc123.r2.cloudflarestorage.com/hub2/Show.S02E01.720p.mkv?X-Amz-Signature=deadbeef">Download</a>
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *season-2-hindi-720p*) printf '%s' "$SEASON_PAGE" ;;
+            *vcloud.fit/ep1link*)  printf '%s' "$VCLOUD_PAGE" ;;
+            *nexdrive*)            printf '%s' "$EP_PAGE" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *)                     printf '%s' "$HUB" ;;
+        esac
+    }
+
+    # hub detection
+    run _vm_is_hub_page "$HUB"
+    assert_success
+    # season 2 maps to its page
+    run _vm_hub_season_url "$HUB" "2"
+    assert_success
+    [ "$output" = "/download-show-season-2-hindi-720p/" ]
+    # season 1 maps to its page
+    run _vm_hub_season_url "$HUB" "1"
+    [ "$output" = "/download-show-season-1-hindi-480p/" ]
+    # get_url follows hub -> season page -> episode link and resolves
+    run plugin_get_url "show-slug:2:1" "720"
+    [ "$status" -eq 0 ] || fail "get_url failed on hub page: $output"
+    run jq -e '.. | objects | select(has("url")) | .url' <<< "$output"
+    assert_success
+}
+
 @test "VegaMovies series get_url resolves streams (season-pack)" {
     run plugin_get_url "download-that-time-i-got-reincarnated-as-a-slime-season-1-4-hindi-dubbed-series-480p-720p-1080p-web-dl:1:1" "720"
     [ "$status" -eq 0 ] || skip "VegaMovies site unavailable"

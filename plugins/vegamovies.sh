@@ -382,6 +382,55 @@ print("\n".join(dict.fromkeys(out)))
 ' "$want" 2>/dev/null || true
 }
 
+# Hub-page resolver (2026-08 redesign): a series post is now a HUB page with
+# per-season headings + "Download Now" buttons linking to individual season
+# pages; the nexdrive resolver links live on those season pages, NOT the hub.
+# Given hub HTML + a season number, return the season page URL path (e.g.
+# "/download-money-heist-season-1-hindi-english-480p-720p/"), or empty.
+# Position-walk: assign each Download Now link to its nearest preceding
+# "Season N" heading.
+_vm_hub_season_url() {
+    local html_page="$1" want="$2"
+    printf '%s' "$html_page" | python3 -c '
+import sys, re
+html = sys.stdin.read()
+want = sys.argv[1]
+tokens = []
+for m in re.finditer(r"Season\s*(\d+)", html):
+    tokens.append((m.start(), "S", m.group(1)))
+for m in re.finditer(r"<a[^>]*href=[\"\x27](/download-[^\"\x27]+)[\"\x27][^>]*>\s*<button[^>]*class=\"dwd-button\"[^>]*>\s*Download Now\s*</button>", html):
+    tokens.append((m.start(), "L", m.group(1)))
+tokens.sort(key=lambda t: t[0])
+cur = None
+for pos, kind, val in tokens:
+    if kind == "S":
+        cur = val
+    elif kind == "L" and cur == want:
+        print(val)
+        break
+' "$want" 2>/dev/null || true
+}
+
+# True when the page is a hub page: has Download Now season buttons but NO
+# nexdrive resolver links. Used to decide whether to follow a season link.
+_vm_is_hub_page() {
+    local html_page="$1"
+    # here-string, not a printf pipe — grep -q exits on first match and a
+    # large page makes printf hit SIGPIPE (141) → pipefail → false flip.
+    if grep -qE 'https://nexdrive\.fit/genxfm' <<< "$html_page"; then
+        return 1   # has resolver links → not a hub
+    fi
+    grep -qE 'class="dwd-button">[^<]*Download Now' <<< "$html_page"
+}
+
+# Extract EVERY nexdrive resolver link from a page (no season position-walk).
+# Used on dedicated season pages (post-2026-08 redesign) where all the links
+# belong to the one season, and on movie pages.
+_vm_all_nexdrive_links() {
+    local html_page="$1"
+    printf '%s' "$html_page" | grep -oE 'href="https://nexdrive\.fit/genxfm[0-9]+/"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true
+}
+
 # Episode-links page pairing: prefer vcloud.fit → fastdl.zip → dgdrive
 # (ad-gated, last resort), bounded to each "Episodes: N:-" block so a block
 # missing the preferred family cannot steal the next episode's link.
@@ -455,6 +504,21 @@ plugin_get_url() {
     html=$(curl "${_VM_CURL[@]}" "$detail_url" 2>/dev/null) || die_network "VegaMovies detail page fetch failed"
     [[ -z "$html" ]] && die_plugin "Empty VegaMovies detail page"
 
+    # 2026-08 redesign: series posts are now HUB pages — per-season headings +
+    # "Download Now" buttons, and NO nexdrive resolver links. The resolver
+    # links live on each season's dedicated page. If this is a hub page,
+    # follow the requested season's button to its page and work from there.
+    if _vm_is_hub_page "$html"; then
+        local want_season="${season:-1}"
+        local season_path
+        season_path=$(_vm_hub_season_url "$html" "$want_season")
+        if [[ -n "$season_path" ]]; then
+            local season_html
+            season_html=$(curl "${_VM_CURL[@]}" -H "Referer: $detail_url" "${_VM_BASE}${season_path}" 2>/dev/null || true)
+            [[ -n "$season_html" ]] && html="$season_html"
+        fi
+    fi
+
     # nexdrive resolver links — the download buttons on the page.
     # For series episodes "series:season:episode", use the EPISODE's own
     # link (the dgdrive URL from the episode-links page) instead of the
@@ -462,36 +526,28 @@ plugin_get_url() {
     # zip, not the requested episode.
     local nx_links
     if [[ -n "$season" && -n "$episode" ]]; then
-        # fetch the episode-links page for this season, find episode N's url
+        # fetch the episode-links pages for this season, find episode N's url.
+        # Position-walk first (multi-season pages); fall back to every link
+        # (dedicated season pages post-redesign hold one season's links).
         local season_links
         season_links=$(_vm_season_links "$html" "$season")
-        # find that episode's OWN playable link on the episode-links page.
-        # The page lists FIVE host families per episode (vcloud.fit,
-        # fastdl.zip, filebee, gdtot, dgdrive) — prefer vcloud/fastdl like
-        # CloudStream does (dgdrive is the ad-gated one).
-        local link ep_html found=""
-        while IFS= read -r link; do
-            [[ -z "$link" ]] && continue
-            ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
-            [[ -z "$ep_html" ]] && continue
-            # NOTE: here-string (<<<), not a printf pipe — grep -q exits on the
-            # first match and a large page makes printf hit SIGPIPE (141) →
-            # pipefail → the check flips to false intermittently.
-            if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
-                found=$(_vm_episode_pair_for "$ep_html" "$episode")
-                [[ -n "$found" ]] && break
-            fi
-        done <<< "$season_links"
+        [[ -z "$season_links" ]] && season_links=$(_vm_all_nexdrive_links "$html")
+        # Merge per-episode across host families (2026-08 redesign: one
+        # episode-links page per family — G-Direct/fastdl.zip often dead,
+        # V-Cloud/vcloud.fit works). Prefers vcloud.fit > fastdl.zip > dgdrive.
+        local found=""
+        found=$(_vm_episode_pairs_merged "$season_links" | awk -F'|' -v want="$episode" '$1 == want {print $2; exit}')
         if [[ -n "$found" ]]; then
             nx_links="$found"
         else
             # episode page missing — fall back to the season's links
-            nx_links=$(_vm_season_links "$html" "$season")
+            nx_links="$season_links"
         fi
     elif [[ -n "$season" ]]; then
         nx_links=$(_vm_season_links "$html" "$season")
+        [[ -z "$nx_links" ]] && nx_links=$(_vm_all_nexdrive_links "$html")
     else
-        nx_links=$(printf '%s' "$html" | grep -oE 'href="https://nexdrive\.fit/genxfm[0-9]+/"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+        nx_links=$(_vm_all_nexdrive_links "$html")
     fi
     [[ -z "$nx_links" ]] && die_plugin "No resolver links on VegaMovies page for: $id"
 
@@ -507,6 +563,51 @@ plugin_get_url() {
 _vm_episode_pair_for() {
     local ep_html="$1" want_ep="$2"
     _vm_episode_pairs "$ep_html" | awk -F'|' -v want="$want_ep" '$1 == want {print $2; exit}'
+}
+
+# Merge episode pairs across MULTIPLE episode-links pages (2026-08 redesign).
+# A season now ships SEVERAL episode-links pages — one per host family
+# (G-Direct → fastdl.zip, V-Cloud → vcloud.fit, ...). The G-Direct/fastdl
+# links are frequently dead ("File is Deleted"), while V-Cloud/vcloud.fit
+# resolve. Walk the season's nexdrive links, fetch each page that carries
+# "Episodes: N:-" labels (capped so we don't fetch all 20+ links), and merge
+# per-episode preferring vcloud.fit > fastdl.zip > dgdrive.pro. Emits the same
+# "N|url" lines as _vm_episode_pairs.
+_vm_episode_pairs_merged() {
+    local links="$1"
+    local max_pages="${2:-4}"
+    local link ep_html allpairs="" pages=0
+    while IFS= read -r link; do
+        [[ -z "$link" ]] && continue
+        (( pages >= max_pages )) && break
+        ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/" "$link" 2>/dev/null || true)
+        [[ -z "$ep_html" ]] && continue
+        # here-string, not a printf pipe (SIGPIPE under pipefail).
+        grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html" || continue
+        pages=$((pages + 1))
+        local p
+        p=$(_vm_episode_pairs "$ep_html")
+        [[ -n "$p" ]] && allpairs+="$p"$'\n'
+    done <<< "$links"
+    printf '%s' "$allpairs" | python3 -c '
+import sys
+pref = [("vcloud.fit", 0), ("fastdl.zip", 1), ("dgdrive.pro", 2)]
+best = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line or "|" not in line:
+        continue
+    n, url = line.split("|", 1)
+    rank = 99
+    for fam, r in pref:
+        if fam in url:
+            rank = r
+            break
+    if n not in best or rank < best[n][0]:
+        best[n] = (rank, url)
+for n in sorted(best, key=lambda x: int(x)):
+    print("%s|%s" % (n, best[n][1]))
+' 2>/dev/null || true
 }
 
 plugin_list_seasons() {
@@ -548,9 +649,25 @@ plugin_list_episodes() {
     fi
     [[ -z "$html" ]] && return 1
 
-    # 1) find the nexdrive link for this season (position-walk as in get_url)
+    # 2026-08 redesign: series posts are HUB pages (season headings + Download
+    # Now buttons, no nexdrive links). Follow the requested season's button to
+    # its dedicated page where the resolver links live.
+    if _vm_is_hub_page "$html"; then
+        local season_path
+        season_path=$(_vm_hub_season_url "$html" "$season_number")
+        if [[ -n "$season_path" ]]; then
+            local season_html
+            season_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "${_VM_BASE}${season_path}" 2>/dev/null || true)
+            [[ -n "$season_html" ]] && html="$season_html"
+        fi
+    fi
+
+    # 1) find the nexdrive link for this season (position-walk as in get_url).
+    #    Fall back to every link on the page (dedicated season pages hold one
+    #    season's links, so the position-walk finds nothing).
     local season_links
     season_links=$(_vm_season_links "$html" "$season_number")
+    [[ -z "$season_links" ]] && season_links=$(_vm_all_nexdrive_links "$html")
     if [[ -z "$season_links" ]]; then
         # Bundle post with no direct per-season links (S1-5 packs etc.):
         # emit a single pack entry so the title stays listable/playable
@@ -560,24 +677,12 @@ plugin_list_episodes() {
         return 0
     fi
 
-    # 2) find the "Episode Links" page among this season's links (its page
-    #    has per-episode labels); fetch it and extract labeled episodes.
-    #    The episode-links page is flaky — retry once before giving up.
-    local link ep_html
-    local episode_pairs=""
-    while IFS= read -r link; do
-        [[ -z "$link" ]] && continue
-        ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
-        if [[ -z "$ep_html" ]] || ! grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
-            sleep 1
-            ep_html=$(curl "${_VM_CURL[@]}" -H "Referer: ${_VM_BASE}/${series_id}/" "$link" 2>/dev/null || true)
-        fi
-        [[ -z "$ep_html" ]] && continue
-        if grep -qE 'Episodes[: ]*[0-9]+' <<< "$ep_html"; then
-            episode_pairs=$(_vm_episode_pairs "$ep_html")
-            [[ -n "$episode_pairs" ]] && break
-        fi
-    done <<< "$season_links"
+    # 2) find the "Episode Links" pages among this season's links and merge
+    #    per-episode across host families (2026-08 redesign: one page per
+    #    family — G-Direct/fastdl.zip is often dead, V-Cloud/vcloud.fit works).
+    #    Prefers vcloud.fit > fastdl.zip > dgdrive.pro per episode.
+    local episode_pairs
+    episode_pairs=$(_vm_episode_pairs_merged "$season_links")
 
     if [[ -z "$episode_pairs" ]]; then
         # fallback: no episode-links page yet (fresh season) — one pack entry
