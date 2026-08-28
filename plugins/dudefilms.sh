@@ -373,6 +373,11 @@ plugin_list_seasons() {
         local s1 s2
         s1=$(printf '%s' "$range" | awk '{print $1}')
         s2=$(printf '%s' "$range" | awk '{print $2}')
+        # Force base-10 (same octal trap as list_episodes: "09" aborts
+        # arithmetic). Also required for the -gt test below, which is
+        # arithmetic evaluation too.
+        [[ "$s1" =~ ^[0-9]+$ ]] && s1=$((10#$s1)) || s1=""
+        [[ "$s2" =~ ^[0-9]+$ ]] && s2=$((10#$s2)) || s2=""
         if [[ -n "$s1" && -n "$s2" && "$s2" -gt "$s1" ]]; then
             # Batched JSONL → one jq pass (was one fork per season)
             local lines="" i
@@ -410,6 +415,12 @@ plugin_list_episodes() {
         [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$arch_page" | grep -cE 'maxbutton-ep' 2>/dev/null || true)
     fi
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
+    # Force base-10: episode labels like "Episode 09" yield "09", which bash
+    # arithmetic reads as OCTAL (invalid → "value too great for base" error,
+    # the for-loop aborts and list_episodes emits []). 10# strips the leading
+    # zero. Guard non-numeric junk too.
+    [[ "$ep_count" =~ ^[0-9]+$ ]] && ep_count=$((10#$ep_count)) || ep_count=1
+    (( ep_count < 1 )) && ep_count=1
 
     # Emit one episode entry per found episode — batched JSONL, one jq pass
     local lines="" i

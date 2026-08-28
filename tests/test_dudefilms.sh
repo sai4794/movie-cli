@@ -145,6 +145,35 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
+@test "DudeFilms list_episodes handles zero-padded episode counts (octal trap)" {
+    # Regression: episode labels like "Episode 09" yield ep_count="09", which
+    # bash arithmetic reads as OCTAL (invalid -> "value too great for base"
+    # error). The for-loop aborted and list_episodes emitted []. Fix forces
+    # base-10 via 10#. Stub an archive page whose highest episode is 09.
+    local DETAIL='<html><body><a href="https://dflinks.cc/archives/777">links</a></body></html>'
+    local ARCH='<html><body>
+<a class="maxbutton-ep" href="https://cdn.example.workers.dev/e1.mkv"><span>Episode 01</span></a>
+<a class="maxbutton-ep" href="https://cdn.example.workers.dev/e8.mkv"><span>Episode 08</span></a>
+<a class="maxbutton-ep" href="https://cdn.example.workers.dev/e9.mkv"><span>Episode 09</span></a>
+</body></html>'
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *archives/777*) printf '%s' "$ARCH" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' "$DETAIL" ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_list_episodes "octal-series" "1" 2>/dev/null)"
+    [[ -n "$raw" && "$raw" != "[]" ]] || fail "list_episodes emitted empty for Episode 09 archive (octal trap)"
+    run jq -e 'length == 9' <<< "$raw"
+    assert_success
+    run jq -e '[.[].episode] | max == 9' <<< "$raw"
+    assert_success
+}
+
 @test "DudeFilms per-episode get_url resolves distinct streams" {
     run plugin_get_url "house-of-the-dragon-season-03-dual-audio-hindi-english-webseries-web-dl-esubs-720p:3:1" "720"
     [ "$status" -eq 0 ] || skip "DudeFilms site unavailable"
