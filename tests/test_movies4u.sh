@@ -83,6 +83,45 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
+@test "Movies4u gdlink.dev resolves busycdn -> googleusercontent playable stream" {
+    # Offline: 2026-08 the gdlink.dev/busycdn chain now ends at a PLAYABLE
+    # video-downloads.googleusercontent.com URL (HTTP 200 + MKV magic). The old
+    # code dropped googleusercontent as "not a stream" and never followed the
+    # busycdn redirect. Verify _m4u_resolve_gdlink follows busycdn -> the
+    # ?url=<googleusercontent> param and emits it with the title-derived quality.
+    local GU="https://video-downloads.googleusercontent.com/ADGPTEST123"
+    local DETAIL='<html><body><a href="https://m4ulinks.site/number/222" class="btn">480p</a></body></html>'
+    local M4U='<html><h4>480p [500MB]</h4><a href="https://gdlink.dev/file/TESTID" class="btn btn-success">G-Direct</a></html>'
+    local GDLINK='<html><title>GDFlix | Test.Show.S01E01.480p.ESubs.mkv</title><a href="https://instant.busycdn.xyz/TOKEN123">Instant DL</a></html>'
+    curl() {
+        # detect the url_effective redirect probe (busycdn follow)
+        local wants_effective=0 a
+        for a in "$@"; do [[ "$a" == "%{url_effective}" ]] && wants_effective=1; done
+        local url="${@: -1}"
+        if (( wants_effective )); then
+            case "$url" in
+                *instant.busycdn.xyz*) printf 'https://fastdl-one.pages.dev/?url=%s' "$GU"; return 0 ;;
+            esac
+        fi
+        case "$url" in
+            *gdlink.dev/file/TESTID*) printf '%s' "$GDLINK" ;;
+            *m4ulinks.site/number/222*) printf '%s' "$M4U" ;;
+            *test-gdlink-movie*) printf '%s' "$DETAIL" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_get_url "test-gdlink-movie" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "gdlink chain resolved nothing"
+    run jq -e '.[0].url == "https://video-downloads.googleusercontent.com/ADGPTEST123"' <<< "$raw"
+    assert_success
+    # quality from the gdlink <title> (480p), not the opaque googleusercontent URL
+    run jq -e '.[0].quality == "480"' <<< "$raw"
+    assert_success
+}
+
 @test "Movies4u get_url resolves the new vcloud.fit atob(atob) chain" {
     # Offline: 2026-08 redesign replaced the hubcloud.php resolver href with a
     # two-step token chain. vcloud page embeds atob(atob('<b64>')) -> tokenized

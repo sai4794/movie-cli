@@ -154,17 +154,51 @@ if m:
 }
 
 # gdlink.dev/file/ID → Instant DL (busycdn) direct link; gates dropped.
-# NOTE: busycdn links redirect to googleusercontent download pages — not
-# playable streams, filtered by _m4u_is_stream_candidate. Only genuine
-# candidates survive.
+# 2026-08: gdlink.dev now serves an instant.busycdn.xyz link that redirects to
+# fastdl-one.pages.dev/?url=<video-downloads.googleusercontent.com/...>. The
+# googleusercontent URL IS a playable stream (HTTP 200 + MKV magic) — the old
+# "busycdn → googleusercontent = not playable" assumption is stale. Follow the
+# chain and emit the googleusercontent URL (verify_streams still filters any
+# that are actually HTML by magic bytes).
 _m4u_resolve_gdlink() {
     local url="$1"
     local page
     page=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" "$url" 2>/dev/null) || return 1
     [[ -z "$page" ]] && return 1
+
+    # Quality from the gdlink page <title> (e.g. "...S01E01...480p...mkv") —
+    # the googleusercontent URL is opaque and carries no quality token.
+    local title q
+    title=$(printf '%s' "$page" | grep -oE '<title>[^<]*</title>' | head -1 | sed -E 's/<\/?title>//g')
+    q=$(_m4u_quality "$title")
+
+    local busycdn final gu
+    busycdn=$(printf '%s' "$page" | grep -oE 'https://instant\.busycdn\.xyz/[^"'"'"' <>]*' | head -1)
+    if [[ -n "$busycdn" ]]; then
+        final=$(curl -so /dev/null -w '%{url_effective}' -L --connect-timeout 8 --max-time 15 "$busycdn" 2>/dev/null || true)
+        if [[ "$final" == *"url="* ]]; then
+            gu=$(python3 -c '
+import sys, urllib.parse
+u = sys.argv[1]
+q = urllib.parse.parse_qs(urllib.parse.urlparse(u).query)
+print(q.get("url", [""])[0])
+' "$final" 2>/dev/null || true)
+            if [[ -n "$gu" && "$gu" == *googleusercontent* ]]; then
+                printf '%s\t%s\n' "$gu" "$q"
+                return 0
+            fi
+        fi
+        # busycdn resolved straight to a playable candidate
+        if [[ -n "$final" ]] && _m4u_is_stream_candidate "$final"; then
+            printf '%s\t%s\n' "$final" "$q"
+            return 0
+        fi
+    fi
+
+    # Fallback: original behavior — extract stream candidates from hrefs
     printf '%s' "$page" | grep -oE 'href="https?://[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u | while IFS= read -r link; do
         if _m4u_is_stream_candidate "$link"; then
-            printf '%s\n' "$link"
+            printf '%s\t%s\n' "$link" "$q"
         fi
     done
 }
@@ -378,8 +412,11 @@ _m4u_get_url_worker() {
     done <<< "$btns" | while IFS=$'\t' read -r su su_q; do
         [[ -z "$su" ]] && continue
         [[ "${su,,}" == *sample* ]] && continue
-        # googleusercontent download pages are not playable streams
-        [[ "${su,,}" == *video-downloads.googleusercontent* ]] && continue
+        # NOTE: video-downloads.googleusercontent.com URLs are PLAYABLE streams
+        # (HTTP 200 + MKV magic) as of 2026-08 — the gdlink.dev/busycdn chain
+        # resolves to them. They used to be dropped here as "download pages";
+        # that assumption went stale. verify_streams filters any that are
+        # actually HTML by magic bytes, so emit them and let verification win.
         # pixeldrain page URL → direct file API
         if [[ "$su" == *pixeldrain* ]]; then
             su=$(sdk_normalize_pixeldrain "$su")
