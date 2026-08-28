@@ -106,6 +106,46 @@ E2 - <a href="https://hubdrive.tips/file/TWO">link2</a>
     assert_success
 }
 
+@test "HDhub4u get_url resolves movie posts behind the JS ad-gate" {
+    # Offline: 2026-08 redesign routes movie download buttons through a
+    # greenmountmotors.com/?id=<b64> JS gate instead of direct hubdrive
+    # links. The gate page embeds a token (b64d->b64d->rot13->b64d->JSON
+    # ->atob(o)) that decodes to an hblinks.co archive page listing the
+    # hubdrive mirrors. Stub the whole chain; assert the movie resolves.
+    local TOKEN
+    TOKEN=$(python3 -c '
+import base64, codecs, json
+payload = json.dumps({"w":10,"l":"https://greenmountmotors.com/homelander/","o":base64.b64encode(b"https://hblinks.co/archives/777").decode()})
+l3 = base64.b64encode(payload.encode()).decode()
+l2 = codecs.encode(l3, "rot_13")
+l1 = base64.b64encode(l2.encode()).decode()
+print(base64.b64encode(l1.encode()).decode())
+')
+    local DETAIL="<html><body><a href=\"https://greenmountmotors.com/?id=GATE1\"><em>720p Links [1GB]</em></a></body></html>"
+    local GATE_PAGE="<html><script>s('o','$TOKEN',180*1000);</script></html>"
+    local HBLINKS='<html><a href="https://hubdrive.tips/file/GMOV">Instant Download</a></html>'
+    curl() {
+        local url="${@: -1}"
+        local id
+        case "$url" in
+            *hubcloud.php*) id="${url##*id=}"; printf '<a href="https://cdn.example.workers.dev/%s.mkv" class="btn btn-success btn-lg h6">D</a>' "$id" ;;
+            */drive/*) id="${url##*/}"; printf '<a id="download" href="https://gamerxyt.com/hubcloud.php?id=%s">x</a>' "$id" ;;
+            *file/GMOV*) printf '<a href="https://hubcloud.cx/drive/DRV-GMOV">d</a>' ;;
+            *greenmountmotors*) printf '%s' "$GATE_PAGE" ;;
+            *hblinks.co*) printf '%s' "$HBLINKS" ;;
+            *test-gated-movie*) printf '%s' "$DETAIL" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_get_url "test-gated-movie" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "gated movie resolved nothing (gate decode broken)"
+    run jq -e '.[0].url == "https://cdn.example.workers.dev/DRV-GMOV.mkv"' <<< "$raw"
+    assert_success
+}
+
 @test "HDhub4u health succeeds" {
     run plugin_health
     assert_success

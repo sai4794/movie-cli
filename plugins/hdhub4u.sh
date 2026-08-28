@@ -120,6 +120,52 @@ _h4u_resolve_link() {
     esac
 }
 
+# ─── JS-gate resolution (2026-08 site redesign) ──────────────────────
+# Movie download buttons now point at an ad-gate (?id=<b64>) that JS-
+# redirects to the real links page. The gate page embeds a token in a
+# localStorage setter: s('o','<b64>',...). Decoding the token yields the
+# destination URL without executing any JavaScript:
+#   b64d -> b64d -> ROT13 -> b64d -> JSON{l,w,o} -> atob(o)
+# (The ROT13 step is the gate's "pen" Caesar cipher; verified against the
+#  deobfuscated gate script.)
+
+# Resolve one gate URL to its final destination. Prints the URL; returns
+# non-zero on failure.
+_h4u_resolve_gate() {
+    local gate_url="$1"
+    local page
+    page=$(curl "${_H4U_CURL[@]}" "$gate_url" 2>/dev/null) || return 1
+    [[ -z "$page" ]] && return 1
+    printf '%s' "$page" | python3 -c '
+import sys, re, base64, codecs, json
+h = sys.stdin.read()
+m = re.search(r"s\(.o.,.([A-Za-z0-9+/=]+).", h)
+if not m:
+    sys.exit(1)
+tok = m.group(1)
+def b64d(s):
+    s += "=" * (-len(s) % 4)
+    return base64.b64decode(s).decode("latin-1")
+try:
+    l2 = b64d(b64d(tok))
+    l3 = codecs.decode(l2, "rot_13")
+    data = json.loads(b64d(l3))
+    print(b64d(data["o"]))
+except Exception:
+    sys.exit(1)
+' 2>/dev/null
+}
+
+# hblinks.co archive page -> hubdrive/hubcloud mirror links (one per line).
+_h4u_resolve_hblinks() {
+    local archive_url="$1"
+    local page
+    page=$(curl "${_H4U_CURL[@]}" "$archive_url" 2>/dev/null) || return 1
+    [[ -z "$page" ]] && return 1
+    printf '%s' "$page" | grep -oE 'href="https://(hubdrive|hubcloud)[^"]+"' | \
+        sed -E 's/.*href="([^"]+)".*/\1/' | sort -u
+}
+
 # ═══════════════════════════════════════════════════════════════
 # Plugin Functions
 # ═══════════════════════════════════════════════════════════════
@@ -271,6 +317,35 @@ for m in pat.finditer(html):
 ' "$episode" 2>/dev/null || true)
     else
         mirror_links=$(printf '%s' "$html" | grep -oE 'href="https://(hubdrive|hubcloud)[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+
+        # 2026-08 redesign: movie posts route download buttons through a JS
+        # ad-gate (?id=<b64>) instead of direct hubdrive/hubcloud links.
+        # No direct links + gate buttons present → resolve each gate to its
+        # links page (hblinks.co archive) and collect the mirrors there.
+        if [[ -z "$mirror_links" ]]; then
+            local gate_urls
+            gate_urls=$(printf '%s' "$html" | grep -oE 'href="https://[a-z0-9.-]+/\?id=[A-Za-z0-9+/=]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u 2>/dev/null || true)
+            if [[ -n "$gate_urls" ]]; then
+                local gate dest
+                while IFS= read -r gate; do
+                    [[ -z "$gate" ]] && continue
+                    dest=$(_h4u_resolve_gate "$gate") || continue
+                    [[ -z "$dest" ]] && continue
+                    debug "Gate resolved: $gate -> $dest"
+                    case "$dest" in
+                        *hblinks*)
+                            local hbl
+                            hbl=$(_h4u_resolve_hblinks "$dest") || continue
+                            [[ -n "$hbl" ]] && mirror_links="${mirror_links:+$mirror_links$'\n'}$hbl"
+                            ;;
+                        *hubdrive*|*hubcloud*)
+                            mirror_links="${mirror_links:+$mirror_links$'\n'}$dest"
+                            ;;
+                    esac
+                done <<< "$gate_urls"
+                [[ -n "$mirror_links" ]] && mirror_links=$(printf '%s\n' "$mirror_links" | sort -u)
+            fi
+        fi
     fi
 
     [[ -z "$mirror_links" ]] && die_plugin "No resolvable mirror links on HDhub4u page for: $id"

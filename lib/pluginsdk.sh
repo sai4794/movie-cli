@@ -23,6 +23,13 @@
 [[ -n "${_PLUGIN_SDK_LOADED:-}" ]] && return 0
 _PLUGIN_SDK_LOADED=1
 
+# Glob-match helper shared by candidate filtering and resolver walks.
+# Top-level (NOT nested in sdk_is_stream_candidate): sdk_resolve_resolver
+# calls it directly, and a nested definition only exists after the first
+# candidate call — the resolver ran first and logged "command not found".
+# shellcheck disable=SC2053  # intentional: unquoted RHS = glob match
+match_glob() { [[ -n "$1" && "$2" == $1 ]]; }
+
 # ───────────────────────────────────────────────────────────────
 # Config file loading (key=value parser shared with lib/config.sh)
 # ───────────────────────────────────────────────────────────────
@@ -184,9 +191,6 @@ sdk_is_stream_candidate() {
 
     local lower
     lower=$(printf '%s' "$link" | tr '[:upper:]' '[:lower:]')
-
-    # shellcheck disable=SC2053  # intentional: unquoted RHS = glob match
-    match_glob() { [[ -n "$1" && "$2" == $1 ]]; }
 
     local glob
     local -a _SDK_GLOBS=()
