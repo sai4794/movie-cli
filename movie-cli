@@ -450,7 +450,10 @@ _search_results() {
 resolve_streams_for() {
     local id="$1" quality="$2"
     local streams_json
-    streams_json=$(run_plugin plugin_get_url "$id" "$quality" 2>/dev/null)
+    # `|| true`: a plugin die_plugin (exit 3) inside the command substitution
+    # otherwise propagates to this assignment and set -e kills the whole CLI
+    # before the caller's retry/back menu can run.
+    streams_json=$(run_plugin plugin_get_url "$id" "$quality" 2>/dev/null) || true
     streams_json=$(sort_streams "$streams_json")
     streams_json=$(verify_streams "$streams_json")
     printf '%s' "$streams_json"
@@ -756,7 +759,9 @@ search_and_play() {
     # Movie playback flow
     status_msg "Resolving streams..."
     prof_start "stream_resolution"
-    qualities_json=$(run_plugin plugin_get_url "$selected_id" "$quality" 2>/dev/null)
+    # `|| true`: plugin die_plugin (exit 3) inside the substitution must not
+    # kill the CLI — the no-streams retry/back menu below handles it.
+    qualities_json=$(run_plugin plugin_get_url "$selected_id" "$quality" 2>/dev/null) || true
     if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] || [[ "$(printf '%s' "$qualities_json" | verify_streams 2>/dev/null)" == "[]" ]]; then
         qualities_json=$(verify_streams "$(sort_streams "$qualities_json")" 2>/dev/null)
     fi
