@@ -83,6 +83,47 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
+@test "Movies4u get_url resolves the new vcloud.fit atob(atob) chain" {
+    # Offline: 2026-08 redesign replaced the hubcloud.php resolver href with a
+    # two-step token chain. vcloud page embeds atob(atob('<b64>')) -> tokenized
+    # URL; fetching that yields a page embedding the direct R2 stream inside an
+    # Android intent (createIntentURL({host: ...})). Quality comes from the v2
+    # page <title> (the filename) since the R2 URL is opaque. Stub the whole
+    # chain; assert the stream resolves with the title-derived quality.
+    local TOKEN_URL="https://vcloud.fit/TESTVID?token=Zm9v"
+    local TOKEN
+    TOKEN=$(python3 -c '
+import base64
+u = "https://vcloud.fit/TESTVID?token=Zm9v"
+l1 = base64.b64encode(u.encode()).decode()
+print(base64.b64encode(l1.encode()).decode())
+')
+    local DETAIL='<html><body><a href="https://m4ulinks.site/number/111" class="btn">720p</a></body></html>'
+    local M4U='<html><h4>720p [1GB]</h4><a href="https://vcloud.fit/TESTVID" class="btn btn-success">Download</a></html>'
+    local V1="<html><title>Test.Movie.2023.720p.mkv</title><script>var url = atob(atob('$TOKEN'));</script></html>"
+    local V2="<html><title>Test.Movie.2023.720p.WEB-DL.mkv</title><script>createIntentURL({host: 'https://pub-test.r2.dev/abc123?token=9',scheme: 'https',type: 'video/x-matrosk'});</script></html>"
+    curl() {
+        local url="${@: -1}"
+        case "$url" in
+            *vcloud.fit/TESTVID?token=*) printf '%s' "$V2" ;;
+            *vcloud.fit/TESTVID*) printf '%s' "$V1" ;;
+            *m4ulinks.site/number/111*) printf '%s' "$M4U" ;;
+            *test-vcloud-movie*) printf '%s' "$DETAIL" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_get_url "test-vcloud-movie" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "vcloud new-chain movie resolved nothing"
+    run jq -e '.[0].url == "https://pub-test.r2.dev/abc123?token=9"' <<< "$raw"
+    assert_success
+    # quality must come from the v2 <title> (720p), not the opaque R2 URL
+    run jq -e '.[0].quality == "720"' <<< "$raw"
+    assert_success
+}
+
 @test "Movies4u series seasons are extracted" {
     run plugin_list_seasons "breaking-bad-season-1-5-dual-audio-hindi-org-english-complete-web-series-bluray"
     [[ "$status" -eq 0 ]]

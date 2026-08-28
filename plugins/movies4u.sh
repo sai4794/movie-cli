@@ -80,8 +80,11 @@ _m4u_quality() {
 
 _m4u_stream_json() {
     # Movies4u URLs are used verbatim (no percent-encoding), matching CSX.
-    local url="$1" referer="${2:-}"
-    sdk_stream_json "movies4u" "$(_m4u_quality "$url")" "$url" "$referer"
+    # $3 = optional explicit quality (vcloud new-chain emits it from the page
+    # <title> since the opaque R2 URL carries no quality token).
+    local url="$1" referer="${2:-}" q="${3:-}"
+    [[ -z "$q" ]] && q=$(_m4u_quality "$url")
+    sdk_stream_json "movies4u" "$q" "$url" "$referer"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -94,10 +97,60 @@ _m4u_resolve_video() {
     local page href
     page=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" "$video_url" 2>/dev/null) || return 1
     [[ -z "$page" ]] && return 1
+
+    # Legacy chain (pre-2026-08): page carried a hubcloud.php resolver href.
     href=$(printf '%s' "$page" | grep -oE 'href="https?://[^"]*hubcloud\.php[^"]*"' | head -1 | sed -E 's/.*href="([^"]+)".*/\1/' 2>/dev/null || true)
-    [[ -z "$href" ]] && return 1
-    # Resolver pages accept ALL anchors (btn_only=0) on this site.
-    sdk_resolve_resolver "$href" _m4u_is_stream_candidate 0 "$_M4U_PIXEL_GLOBS" "${_M4U_BASE}/"
+    if [[ -n "$href" ]]; then
+        # Resolver pages accept ALL anchors (btn_only=0) on this site.
+        sdk_resolve_resolver "$href" _m4u_is_stream_candidate 0 "$_M4U_PIXEL_GLOBS" "${_M4U_BASE}/"
+        return $?
+    fi
+
+    # New chain (2026-08): the vcloud page embeds a double-base64 token via
+    # atob(atob(...)) that decodes to a tokenized URL; fetching that page
+    # yields a second page that embeds the direct R2 stream inside an Android
+    # intent (createIntentURL({host: ...})). No JS execution needed — both
+    # steps are plain fetch + regex. The direct R2 link needs no Referer.
+    local token_url direct
+    token_url=$(printf '%s' "$page" | python3 -c '
+import sys, re, base64
+h = sys.stdin.read()
+m = re.search(r"atob\(atob\(.([A-Za-z0-9+/=]+).\)\)", h)
+if not m:
+    sys.exit(0)
+t = m.group(1)
+t += "=" * (-len(t) % 4)
+l1 = base64.b64decode(t).decode("latin-1")
+l1 += "=" * (-len(l1) % 4)
+print(base64.b64decode(l1).decode("latin-1"))
+' 2>/dev/null)
+    [[ -z "$token_url" ]] && return 1
+
+    local page2
+    page2=$(curl "${_M4U_CURL[@]}" -H "Referer: ${video_url}" "$token_url" 2>/dev/null) || return 1
+    [[ -z "$page2" ]] && return 1
+
+    direct=$(printf '%s' "$page2" | python3 -c '
+import sys, re
+h = sys.stdin.read()
+m = re.search(r"host:\s*.(https?://[^ ]+?).\s*,\s*scheme", h)
+if m:
+    print(m.group(1))
+    sys.exit(0)
+m = re.search(r"(https?://[a-z0-9.-]*(?:r2\.dev|workers\.dev)[^\" ]*)", h)
+if m:
+    print(m.group(1))
+' 2>/dev/null)
+    [[ -z "$direct" ]] && return 1
+
+    # The R2 URL is opaque (no quality token). Recover the quality from the
+    # page <title> (the filename, e.g. "...480p.WEB-DL...mkv") and emit it
+    # tab-separated so the worker can label the stream. The worker falls back
+    # to URL-derived quality for lines without a tab.
+    local title q
+    title=$(printf '%s' "$page2" | grep -oE '<title>[^<]*' | head -1 | sed 's/<title>//' 2>/dev/null || true)
+    q=$(_m4u_quality "$title")
+    printf '%s\t%s\n' "$direct" "$q"
 }
 
 # gdlink.dev/file/ID → Instant DL (busycdn) direct link; gates dropped.
@@ -322,7 +375,7 @@ _m4u_get_url_worker() {
                 fi
                 ;;
         esac
-    done <<< "$btns" | while IFS= read -r su; do
+    done <<< "$btns" | while IFS=$'\t' read -r su su_q; do
         [[ -z "$su" ]] && continue
         [[ "${su,,}" == *sample* ]] && continue
         # googleusercontent download pages are not playable streams
@@ -333,9 +386,9 @@ _m4u_get_url_worker() {
         fi
         # workers.dev hotlink-check needs Referer from sportverse.cc
         if [[ "$su" == *"workers.dev"* ]]; then
-            _m4u_stream_json "$su" "https://sportverse.cc/"
+            _m4u_stream_json "$su" "https://sportverse.cc/" "$su_q"
         else
-            _m4u_stream_json "$su"
+            _m4u_stream_json "$su" "" "$su_q"
         fi
     done
 }
