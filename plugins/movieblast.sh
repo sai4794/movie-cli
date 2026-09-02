@@ -285,6 +285,9 @@ plugin_get_url() {
 
     # Sign all URLs and return as JSON array
     local -a signed_streams=()
+    local _mb_sign_tmp
+    _mb_sign_tmp=$(mktemp 2>/dev/null || mktemp -t movieblast_sign)
+    printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null > "$_mb_sign_tmp" || true
     while IFS= read -r obj; do
         local raw_url
         raw_url=$(printf '%s' "$obj" | jq -r '.url' 2>/dev/null)
@@ -293,7 +296,8 @@ plugin_get_url() {
         local signed_obj
         signed_obj=$(printf '%s' "$obj" | jq -c --arg u "$signed_url" '.url = $u' 2>/dev/null)
         signed_streams+=("$signed_obj")
-    done < <(printf '%s' "$qualities_json" | jq -c '.[]' 2>/dev/null)
+    done < "$_mb_sign_tmp"
+    rm -f "$_mb_sign_tmp" 2>/dev/null || true
 
     # Return as JSON array
     printf '['

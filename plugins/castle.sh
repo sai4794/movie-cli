@@ -316,25 +316,33 @@ plugin_get_url() {
     ' 2>/dev/null)
     lang_names+=("$default_lang")
 
+    local _ct_tracks_tmp
+    _ct_tracks_tmp=$(mktemp 2>/dev/null || mktemp -t castle_tracks)
+    printf '%s' "$tracks_json" | jq -r '
+        .[] | select(.existIndividualVideo == true and .isDefault != true) |
+        "\(.languageId)\t\(.languageName)"
+    ' 2>/dev/null > "$_ct_tracks_tmp" || true
     while IFS=$'\t' read -r lid lname; do
         [[ -z "$lid" ]] && continue
         lang_ids+=("$lid")
         lang_names+=("$lname")
-    done < <(printf '%s' "$tracks_json" | jq -r '
-        .[] | select(.existIndividualVideo == true and .isDefault != true) |
-        "\(.languageId)\t\(.languageName)"
-    ' 2>/dev/null)
+    done < "$_ct_tracks_tmp"
+    rm -f "$_ct_tracks_tmp" 2>/dev/null || true
 
     # Available resolutions from the episode's videos array (skip premium-only).
     # Fallback to 0,1,2 if parsing fails.
     local -a res_codes=()
     local -A res_labels=([0]="360p" [1]="480p" [2]="720p" [3]="1080p")
-    while IFS= read -r rc; do
-        [[ -n "$rc" ]] && res_codes+=("$rc")
-    done < <(printf '%s' "$detail_json" | jq -r --arg e "${ep_index}" '
+    local _ct_res_tmp
+    _ct_res_tmp=$(mktemp 2>/dev/null || mktemp -t castle_res)
+    printf '%s' "$detail_json" | jq -r --arg e "${ep_index}" '
         [.data.episodes[]? | select(.number == ($e | tonumber))][0].videos[]? |
         select(.premiumProPermission != true) | .resolution
-    ' 2>/dev/null)
+    ' 2>/dev/null > "$_ct_res_tmp" || true
+    while IFS= read -r rc; do
+        [[ -n "$rc" ]] && res_codes+=("$rc")
+    done < "$_ct_res_tmp"
+    rm -f "$_ct_res_tmp" 2>/dev/null || true
     [[ ${#res_codes[@]} -eq 0 ]] && res_codes=(1 2)
 
     # Query every (language × resolution) combination in parallel

@@ -16,18 +16,32 @@ json_count() {
 
 # ═══════════════════════════════════════════════════════════════
 # Extract N fields from every element of a JSON array in ONE jq pass.
-# Usage:   json_rows "$json" title id type plugin
+# Usage:   json_rows "json" [--out FILE] title id type plugin
 # Output:  one TSV line per element, fields in the given order.
+#          When --out FILE is given, TSV is written to FILE; the caller
+#          can then `while read ...; do ...; done < "$file"` in the
+#          CURRENT shell (no subshell), preserving array mutations.
 # Missing/null fields render as the literal string "null", matching what
 # `jq -r '.[i].field'` printed before (callers treat both uniformly).
 # ═══════════════════════════════════════════════════════════════
 json_rows() {
     local json="$1"
+    local out_file=""
     shift
+    if [[ "${1:-}" == "--out" ]]; then
+        out_file="$2"
+        shift 2
+    fi
     local fields="$*"
-    printf '%s' "$json" | jq -r --arg fs "$fields" '
-        .[] | [($fs | split(" "))[] as $f | (.[$f] // null | tostring)] | @tsv
-    ' 2>/dev/null || true
+    if [[ -n "$out_file" ]]; then
+        printf '%s' "$json" | jq -r --arg fs "$fields" '
+            .[] | [($fs | split(" ")[]) as $f | (.[$f] // null | tostring)] | @tsv
+        ' 2>/dev/null > "$out_file" || true
+    else
+        printf '%s' "$json" | jq -r --arg fs "$fields" '
+            .[] | [($fs | split(" ")[]) as $f | (.[$f] // null | tostring)] | @tsv
+        ' 2>/dev/null || true
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -62,7 +76,9 @@ json_fill_arrays() {
 
     [[ -z "$json" || "$json" == "[]" ]] && return 0
 
-    local n=0 field_value
+    local n=0 field_value _rows_tmp
+    _rows_tmp=$(mktemp 2>/dev/null || mktemp -t json_rows)
+    json_rows "$json" --out "$_rows_tmp" "$@"
     while IFS=$'\t' read -r "$@"; do
         for field in "$@"; do
             uname="${field^^}"
@@ -71,6 +87,7 @@ json_fill_arrays() {
             eval "${prefix}_${uname}+=(\"\${field_value}\")"
         done
         (( ++n ))
-    done < <(json_rows "$json" "$@")
+    done < "$_rows_tmp"
+    rm -f "$_rows_tmp" 2>/dev/null || true
     printf -v "${prefix}_COUNT" '%s' "$n"
 }

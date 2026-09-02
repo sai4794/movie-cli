@@ -239,9 +239,13 @@ _vm_resolve_nexdrive() {
     [[ -z "$page" ]] && return 1
 
     local -a links=()
+    local _vm_links_tmp
+    _vm_links_tmp=$(mktemp 2>/dev/null || mktemp -t vegamovies_links)
+    printf '%s' "$page" | grep -oE 'href="https?://[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u > "$_vm_links_tmp" 2>/dev/null || true
     while IFS= read -r l; do
         [[ -n "$l" ]] && links+=("$l")
-    done < <(printf '%s' "$page" | grep -oE 'href="https?://[^"]+"' | sed -E 's/.*href="([^"]+)".*/\1/' | sort -u)
+    done < "$_vm_links_tmp"
+    rm -f "$_vm_links_tmp" 2>/dev/null || true
 
     local tmp_dir
     tmp_dir=$(mktemp -d)

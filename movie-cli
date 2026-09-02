@@ -470,10 +470,13 @@ resolve_streams_for() {
 collect_streams() {
     local json="$1"
     _STREAMS=()
-    local obj
+    local obj _streams_tmp
+    _streams_tmp=$(mktemp 2>/dev/null || mktemp -t movie_cli_streams)
+    json_objects "$json" > "$_streams_tmp" 2>/dev/null || true
     while IFS= read -r obj; do
         [[ -n "$obj" ]] && _STREAMS+=("$obj")
-    done < <(json_objects "$json")
+    done < "$_streams_tmp"
+    rm -f "$_streams_tmp" 2>/dev/null || true
 }
 
 # Persist final playback position for --continue (no-op on zero/invalid).
