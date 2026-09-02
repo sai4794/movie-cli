@@ -121,13 +121,48 @@ _android_launch() {
 # process model. The only hand-off mechanism is a URL opener exposed by
 # the terminal host itself. Known openers: Blink Shell `openurl`/`open`,
 # a-Shell `open` (a-Shell can't run bash at all, listed for completeness).
-# iSH ships none — set MOVIE_CLI_OPENER=<cmd> if your setup provides one.
+# iSH ships BusyBox's `open` (file opener, NOT a URL opener) — the helper
+# below detects and excludes it.  Set MOVIE_CLI_OPENER=<cmd> if your
+# setup provides a real URL opener.
 #
 # Hard platform limits (NOT fixable in-script, mirrors of Android's -W):
 #   * fire-and-forget: no opener API reports playback exit status, so
 #     NO_DETACH blocking is impossible on iOS.
 #   * start_time/referrer cannot be passed as intent extras; resume and
 #     CDN referer workarounds are best-effort (VLC scheme ignores them).
+
+# Detect whether a command is a real iOS URL opener (not BusyBox `open`).
+# BusyBox's open opens files; passing it a URL silently does nothing.
+_ios_is_url_opener() {
+    local cmd="$1"
+    command -v "$cmd" &>/dev/null || return 1
+    # Blink Shell `openurl` — always a URL opener.
+    [[ "$cmd" == "openurl" ]] && return 0
+    # Check output of the binary for BusyBox signature.
+    local _v
+    _v=$("$cmd" --help 2>&1 | head -3) || true
+    [[ "$_v" == *"BusyBox"* ]] && return 1
+    # a-Shell's `open` — also a URL opener (no BusyBox in output).
+    return 0
+}
+
+# Fallback: open a URL in VLC via its built-in HTTP interface.
+# VLC for iOS exposes http://localhost:8080/requests/status.xml when the
+# "HTTP remote control" toggle is enabled in Settings.  The /browse endpoint
+# accepts a URI to play.
+_ios_vlc_http_open() {
+    local url="$1"
+    local vlc_port="${VLC_HTTP_PORT:-8080}"
+    local vlc_pass="${VLC_HTTP_PASSWORD:-}"  # default: no password
+    local auth=""
+    [[ -n "$vlc_pass" ]] && auth="-u :$vlc_pass"
+    # /browse endpoint opens a URI in VLC's player.
+    local _code
+    _code=$(curl -s -o /dev/null -w '%{http_code}' $auth \
+        "http://localhost:${vlc_port}/requests/status.xml?command=adddirectory&uri=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=':/?&=%+-._~'))" "$url" 2>/dev/null)" 2>/dev/null) || true
+    [[ "$_code" == "200" ]]
+}
+
 _ios_launch() {
     local url="$1"
     local start_time="${2:-}"
@@ -147,33 +182,41 @@ _ios_launch() {
     candidates+=(openurl open)
 
     for c in "${candidates[@]}"; do
-        if command -v "$c" &>/dev/null; then
+        if _ios_is_url_opener "$c"; then
             opener="$c"
             break
         fi
     done
 
-    if [[ -z "$opener" ]]; then
-        warn "No iOS URL opener found (tried: ${candidates[*]})."
-        warn "Playback needs a terminal that exposes one: Blink Shell (openurl),"
-        warn "or set MOVIE_CLI_OPENER=<command>. Stock iSH has no built-in opener."
-        return 1
+    if [[ -n "$opener" ]]; then
+        debug "iOS launch via $opener: $final_url"
+        if "$opener" "$final_url" >/dev/null 2>&1; then
+            debug "URL handed off successfully"
+            [[ -n "$start_time" ]] && debug "iOS: resume position not passed (opener has no extras API)"
+            return 0
+        fi
+
+        debug "plain open failed — retrying via vlc:// scheme"
+        if "$opener" "vlc://$final_url" >/dev/null 2>&1; then
+            debug "vlc:// hand-off succeeded"
+            return 0
+        fi
+
+        warn "$opener failed to open stream URL"
     fi
 
-    debug "iOS launch via $opener: $final_url"
-    if "$opener" "$final_url" >/dev/null 2>&1; then
-        debug "URL handed off successfully"
-        [[ -n "$start_time" ]] && debug "iOS: resume position not passed (opener has no extras API)"
+    # Fallback: VLC HTTP remote control interface (VLC Settings → HTTP → ON)
+    if _ios_vlc_http_open "$final_url"; then
+        debug "VLC HTTP interface accepted stream URL"
+        [[ -n "$start_time" ]] && debug "iOS: resume position not passed (VLC HTTP no extras API)"
         return 0
     fi
 
-    debug "plain open failed — retrying via vlc:// scheme"
-    if "$opener" "vlc://$final_url" >/dev/null 2>&1; then
-        debug "vlc:// hand-off succeeded"
-        return 0
-    fi
-
-    warn "$opener failed to open stream URL"
+    warn "No iOS URL opener found (tried: ${candidates[*]})."
+    warn "To open streams from iSH, install one of:"
+    warn "  • Blink Shell (provides openurl)"
+    warn "  • Set MOVIE_CLI_OPENER=<your-opener-command>"
+    warn "  • Enable VLC Settings → HTTP remote control (port 8080)"
     return 1
 }
 
