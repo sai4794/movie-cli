@@ -146,6 +146,49 @@ print(base64.b64encode(l1.encode()).decode())
     assert_success
 }
 
+@test "HDhub4u get_url routes pixel links on rotated hubcloud TLDs" {
+    # Offline: hubcloud rotates TLDs (pixel.hubcloud.cx -> .ist -> ...).
+    # Pixel redirector links must be resolved via the dl.php?link= page,
+    # not emitted raw (raw pixel URLs serve HTML and die in verify_streams,
+    # leaving zero playable streams). Regression guard: PIXEL_GLOBS must
+    # stay TLD-agnostic.
+    local DETAIL='<html><body><a href="https://hubdrive.tips/file/PIXF">dl</a></body></html>'
+    curl() {
+        local url="${@: -1}"
+        local id
+        case "$url" in
+            # sdk_resolve_pixel probes with `-o tmpfile -w %{url_effective}`:
+            # the stub curl must swallow flags and serve: real curl writes
+            # the dl.php page to the -o file and prints url_effective.
+            *pixel.hubcloud.ist*)
+                local outfile="" wants_effective=0 a
+                for a in "$@"; do
+                    [[ "$a" == "-o" ]] && { outfile="next"; continue; }
+                    [[ "$outfile" == "next" ]] && { outfile="$a"; continue; }
+                    [[ "$a" == "%{url_effective}" ]] && wants_effective=1
+                done
+                if (( wants_effective )); then
+                    printf '%s' 'https://dl.example/dl.php?link=https%3A%2F%2Fcdn.example.workers.dev%2FPIXEL.mkv'
+                elif [[ -n "$outfile" && "$outfile" != "next" ]]; then
+                    printf '<a href="https://dl.example/other">x</a>' > "$outfile"
+                fi
+                ;;
+            *hubcloud.php*) printf '<a href="https://pixel.hubcloud.ist/?id=PIX1" class="btn btn-success btn-lg h6">D</a>' ;;
+            */drive/*) printf '<a id="download" href="https://gamerxyt.com/hubcloud.php?id=DRV-PIX">x</a>' ;;
+            *file/PIXF*) printf '<a href="https://hubcloud.cx/drive/DRV-PIX">d</a>' ;;
+            *test-pixel-ist*) printf '%s' "$DETAIL" ;;
+            *raw.githubusercontent*) printf '%s' '{}' ;;
+            *) printf '%s' '' ;;
+        esac
+    }
+
+    local raw
+    raw="$(plugin_get_url "test-pixel-ist" 2>/dev/null)"
+    [[ -n "$raw" ]] || fail "pixel-hosted movie resolved nothing"
+    run jq -e '.[0].url == "https://cdn.example.workers.dev/PIXEL.mkv"' <<< "$raw"
+    assert_success
+}
+
 @test "HDhub4u health succeeds" {
     run plugin_health
     assert_success

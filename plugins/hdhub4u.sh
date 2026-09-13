@@ -41,7 +41,7 @@ _H4U_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 # Stream-candidate policy as DATA (algorithm lives in lib/pluginsdk.sh)
 _H4U_REJECT_GLOBS='*tg/go*|*snvhost*|*one.one.one.one*|*google.com/search*|*tinyurl*|*t.me*|*hubcloud.cx/drive*|*hdhub4u.ms*|*googlesyndication*'
 _H4U_FAMILY_GLOBS='*workers.dev*|*r2.cloudflarestorage*|*pixeldrain*|*fsl*|*filescdn*|*aiplex*|*hubcloud*|*hubdrive*|*googleusercontent*'
-_H4U_PIXEL_GLOBS='*pixel.hubcloud.cx*|*gpdl.hubcloud.cx*'
+_H4U_PIXEL_GLOBS='*pixel.hubcloud*|*gpdl.hubcloud*'
 
 # Rebuild curl arrays — Referer depends on the current base.
 # _SDK_CURL mirrors _H4U_CURL so SDK resolvers send identical requests.
