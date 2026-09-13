@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 # VegaMovies plugin for movie-cli
-# Wordpress movie site (vegamovies.catering, rotates) — Typesense
+# Wordpress movie site (new2.vegamovies.futbol, rotates) — Typesense
 # search + nexdrive.fit resolver pages + V-Cloud (hubcloud-family)
 # video links. Reverse-engineered from the CloudStream CSX
 # VegaMovies.cs3 (version 82).
@@ -27,7 +27,7 @@ PLUGIN_REQUIRES=("curl" "jq" "python3")
 PLUGIN_AUTHOR="movie-cli"
 PLUGIN_DESCRIPTION="Movies and series from VegaMovies (nexdrive + V-Cloud/hubcloud chain)"
 
-_VM_BASE="https://vegamovies.catering"
+_VM_BASE="https://new2.vegamovies.futbol"
 _VM_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _VM_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_VM_UA")
 _VM_ALLOW_HOSTS=""
@@ -44,8 +44,9 @@ _VM_FAMILY_GLOBS='*vcloud*|*hubcloud*|*hubdrive*|*r2.cloudflarestorage*|*gpdl*|*
 
 _load_vm_config() {
     sdk_conf_load "$CONF_DIR/vegamovies.conf" VM BASE_URL ALLOW_HOSTS
-    [[ -n "${VM_BASE_URL:-}" ]] && { _VM_BASE="$VM_BASE_URL"; _VM_BASE_USER_SET="${VM_USER_SET:-1}"; }
+    [[ -n "${VM_BASE_URL:-}" ]] && { _VM_BASE="$VM_BASE_URL"; _VM_BASE_USER_SET=1; }
     [[ -n "${VM_ALLOW_HOSTS+x}" ]] && _VM_ALLOW_HOSTS="$VM_ALLOW_HOSTS"
+    return 0
 }
 
 # Auto domain rotation (CSX-style): fetch the live URL list once a day
@@ -248,7 +249,8 @@ _vm_resolve_nexdrive() {
     rm -f "$_vm_links_tmp" 2>/dev/null || true
 
     local tmp_dir
-    tmp_dir=$(mktemp -d)
+    tmp_dir=$(mktemp -d) || return 1
+    [[ -n "$tmp_dir" && -d "$tmp_dir" ]] || return 1
     local pids=() idx=0
     local link
     for link in "${links[@]}"; do
@@ -284,13 +286,13 @@ _vm_resolve_nexdrive() {
         idx=$((idx + 1))
     done
 
-    wait "${pids[@]}" 2>/dev/null || true
+    (( ${#pids[@]} )) && wait "${pids[@]}" 2>/dev/null || true
 
     local out=""
     if compgen -G "$tmp_dir/out_*.txt" > /dev/null 2>&1; then
         out=$(cat "$tmp_dir"/out_*.txt 2>/dev/null | sort -u)
     fi
-    rm -rf "$tmp_dir"
+    [[ -n "$tmp_dir" && -d "$tmp_dir" ]] && rm -rf "$tmp_dir"
     [[ -n "$out" ]] && printf '%s\n' "$out"
 }
 
@@ -578,7 +580,7 @@ _vm_episode_pair_for() {
 # per-episode preferring vcloud.fit > fastdl.zip > dgdrive.pro. Emits the same
 # "N|url" lines as _vm_episode_pairs.
 _vm_episode_pairs_merged() {
-    local links="$1"
+    local link_list="$1"
     local max_pages="${2:-4}"
     local link ep_html allpairs="" pages=0
     while IFS= read -r link; do
@@ -592,7 +594,7 @@ _vm_episode_pairs_merged() {
         local p
         p=$(_vm_episode_pairs "$ep_html")
         [[ -n "$p" ]] && allpairs+="$p"$'\n'
-    done <<< "$links"
+    done <<< "$link_list"
     printf '%s' "$allpairs" | python3 -c '
 import sys
 pref = [("vcloud.fit", 0), ("fastdl.zip", 1), ("dgdrive.pro", 2)]

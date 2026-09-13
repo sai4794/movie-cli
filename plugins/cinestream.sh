@@ -222,7 +222,8 @@ plugin_get_url() {
     local imdb_id="${id%%:*}"
 
     local tmp_dir
-    tmp_dir=$(mktemp -d)
+    tmp_dir=$(mktemp -d) || die_plugin "No temp dir"
+    [[ -n "$tmp_dir" && -d "$tmp_dir" ]] || die_plugin "No temp dir"
 
     # Array to track running background job PIDs
     local pids=()

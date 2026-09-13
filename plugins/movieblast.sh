@@ -9,7 +9,10 @@ PLUGIN_NAME="MovieBlast"
 PLUGIN_VERSION="1.0.0"
 PLUGIN_API_VERSION="5"
 PLUGIN_TYPES=("movie" "series")
-PLUGIN_REQUIRES=("curl" "jq")
+# NOTE: openssl is also required at runtime (_mb_sign_url HMAC); the host
+# dependency gate does not check it yet, so signing fails loudly via the
+# openssl error rather than silently producing bad URLs.
+PLUGIN_REQUIRES=("curl" "jq" "openssl")
 PLUGIN_AUTHOR="movie-cli"
 PLUGIN_DESCRIPTION="Movies and series from MovieBlast API"
 
@@ -80,7 +83,7 @@ _load_token() {
     # 2. Config file
     local conf_file="$CONF_DIR/movieblast.conf"
     if [[ -f "$conf_file" ]]; then
-        _MB_TOKEN=$(grep -E '^TOKEN=' "$conf_file" 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'")
+        _MB_TOKEN=$(grep -E '^[[:space:]]*(export[[:space:]]+)?TOKEN=' "$conf_file" 2>/dev/null | sed -E 's/^[[:space:]]*(export[[:space:]]+)?TOKEN=//' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//" | tr -d '\r')
         if [[ -n "$_MB_TOKEN" ]]; then
             debug "Token from config file"
             return 0
@@ -188,16 +191,19 @@ plugin_search() {
         poster: (.poster_path // null)
     }' 2>/dev/null | jq -s '.' 2>/dev/null || printf '[]')
 
-    # Cinemeta fallback: when API search returns sparse results
-    source "${LIB_DIR}/cinemeta.sh" 2>/dev/null
-    set +euo pipefail
+    # Cinemeta fallback: when API search returns sparse results.
+    # (Shared orchestrator lives in lib/cinemeta.sh, already pipefail-safe;
+    # the old inline `set +euo pipefail` used to leak strict-mode-off to the
+    # host shell on direct-source paths.)
+    [[ -f "${LIB_DIR:-}/cinemeta.sh" ]] && source "${LIB_DIR}/cinemeta.sh"
     local cm_count
     cm_count=$(printf '%s' "$wp_results" | jq 'length' 2>/dev/null || echo 0)
     if [[ "$cm_count" -lt 2 ]]; then
         local cm_all cm_tmp cm_rows
         cm_all=$(cinemeta_top_results "$query" 3 2>/dev/null || true)
         if [[ -n "$cm_all" && "$cm_all" != "[]" && "$cm_all" != "null" ]]; then
-            cm_tmp=$(mktemp)
+            cm_tmp=$(mktemp) || cm_tmp=""
+            [[ -n "$cm_tmp" ]] || { printf '%s' "$wp_results"; return 0; }
             cm_rows=$(printf '%s' "$cm_all" | jq -c '.[]' 2>/dev/null || true)
             while IFS= read -r meta; do
                 [[ -z "$meta" ]] && continue

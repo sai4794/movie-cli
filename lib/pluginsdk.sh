@@ -146,6 +146,9 @@ sdk_rotate_domain() {
     dom="${dom%/}"
     dom="${dom## }"
     [[ -z "$dom" ]] && return 0
+    # Validate: this third-party list silently re-bases every request — a
+    # compromised entry (userinfo/@, non-https, path) must not apply.
+    [[ "$dom" =~ ^https://[A-Za-z0-9.-]+$ ]] || { debug "$name: rejecting malformed domain: $dom"; return 0; }
 
     if [[ "$dom" != "$current_base" ]]; then
         debug "$name domain rotated: $current_base → $dom"

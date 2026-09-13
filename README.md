@@ -50,7 +50,7 @@ Playing: Inception (2010)
 - **CineStream** — Cinemeta search + Vidlink / PlayImdb / Stremio addon resolution
 - **MovieBlast** — MovieBlast API (signed HMAC requests)
 - **4KHDHub** — 4K movies/series from 4khdhub.one (HubCloud/HubDrive mirror chain)
-- **HDhub4u** — Hindi/English movies from new4.hdhub4u.cl (Typesense search API + HubDrive chain)
+- **HDhub4u** — Hindi/English movies from hdhub4u.cl (Typesense search API + HubDrive chain)
 - **Movies4u** — Hindi/English movies from the movies4u.clinic family (m4ulinks → hubcloud/gdlink/gdflix chain)
 - **VegaMovies** — Movies/series from vegamovies (Typesense catalog + VCloud/dgdrive resolution)
 - **DudeFilms** — Movies/series from dudefilms (dflinks archives → hubcloud drive chain)

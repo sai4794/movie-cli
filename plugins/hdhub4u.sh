@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hdhub4u.sh — HDhub4u plugin for movie-cli
-# Movies + series from new4.hdhub4u.cl (Hindi/English content)
+# Movies + series from new5.hdhub4u.cl (Hindi/English content)
 # Reverse-engineered from the CloudStream HDhub4u extension (phisher98 repo)
 # Search: Typesense JSON API (search.pingora.fyi) — GET with query params
 #   (POST is 403'd; wp-json REST API is disabled for guests)
@@ -26,7 +26,7 @@ PLUGIN_DESCRIPTION="Movies and series from HDhub4u (Hindi/English, via HubDrive/
 # ═══════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════
-_H4U_BASE="https://new4.hdhub4u.cl"
+_H4U_BASE="https://new5.hdhub4u.cl"
 _H4U_SEARCH="https://search.pingora.fyi/collections/post/documents/search"
 _H4U_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _H4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_H4U_UA" -H "Referer: ${_H4U_BASE}/")
@@ -199,7 +199,7 @@ _h4u_typesense_results() {
     printf '%s' "$1" | jq -c '
         [.hits[]?.document |
         {
-            id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
+            id: ((.permalink // "") | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
             title: (.post_title
                 | sub("^Download "; "")
                 | gsub("\\[[^\\]]*\\]"; " ")
@@ -249,7 +249,7 @@ _h4u_research_site() {
     [[ -z "$search_resp" ]] && return 0
     printf '%s' "$search_resp" | jq -c '
         [.hits[]?.document | {
-            id: (.permalink | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
+            id: ((.permalink // "") | sub("^https?://[^/]+"; "") | gsub("^/"; "") | gsub("/$"; "")),
             title: (.post_title | sub("^Download "; "") | gsub("\\[[^\\]]*\\]"; " ") | gsub("\\{[^}]*\\}"; " ") | sub("\\s*(4K|[0-9]+p)\\s*.*$"; "") | gsub("\\s+"; " ") | gsub("\\s+$"; "")),
             type: (if (.post_title | test("TVSeries|Season [0-9]"; "i")) then "series" else "movie" end),
             year: .year,
@@ -304,6 +304,7 @@ plugin_get_url() {
         # Series episode id "series:season:episode" — the post page lists
         # single-episode links as "E01 – <a href=hubdrive...>". Select only
         # the anchor for the requested episode number.
+        [[ "$episode" =~ ^[0-9]+$ ]] || die_plugin "Invalid episode id: $id"
         mirror_links=$(printf '%s' "$html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
@@ -376,8 +377,10 @@ plugin_list_seasons() {
     season=$(grep -oiE 'Season[[:space:]]*[0-9]+' <<< "$html" | grep -oE '[0-9]+' 2>/dev/null || true)
     [[ -n "$season" ]] && season=$(printf '%s\n' "$season" | awk 'NR==1{print}')
     [[ -z "$season" ]] && season="1"
+    # Base-10: "Season 08/09" would emit number:08 (invalid JSON).
+    [[ "$season" =~ ^[0-9]+$ ]] && season=$((10#$season)) || season=1
 
-    printf '[{"id":"%s","title":"Season %s","number":%s}]\n' "$season" "$season" "$season"
+    printf '[{"id":"%d","title":"Season %d","number":%d}]\n' "$season" "$season" "$season"
 }
 
 plugin_list_episodes() {

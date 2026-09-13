@@ -11,7 +11,9 @@
 # ═══════════════════════════════════════════════════════════════
 json_count() {
     local json="$1"
-    printf '%s' "$json" | jq 'length' 2>/dev/null || echo 0
+    # Contract: array length, anything else → 0 (a JSON string's length is
+    # its char count — verified `"hello"` → 5 — which callers must not see).
+    printf '%s' "$json" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -66,25 +68,34 @@ json_fill_arrays() {
     local prefix="$2"
     shift 2
 
+    # Array names are built from our own literals — reject anything else so
+    # a hostile field name can never reach eval below.
+    [[ "$prefix" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+
     local field uname
     for field in "$@"; do
         uname="${field^^}"
         uname="${uname//-/_}"
+        [[ "${prefix}_${uname}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
         eval "${prefix}_${uname}=()"
     done
     printf -v "${prefix}_COUNT" '%s' "0"
 
     [[ -z "$json" || "$json" == "[]" ]] && return 0
 
-    local n=0 field_value _rows_tmp
-    _rows_tmp=$(mktemp 2>/dev/null || mktemp -t json_rows)
+    # Values arrive from remote site titles — %q escapes them for re-input
+    # so quotes/$(...)/backticks in a title can never execute via eval.
+    local n=0 field_value _rows_tmp q
+    _rows_tmp=$(mktemp 2>/dev/null || mktemp -t json_rows) || return 1
+    [[ -n "$_rows_tmp" ]] || return 1
     json_rows "$json" --out "$_rows_tmp" "$@"
     while IFS=$'\t' read -r "$@"; do
         for field in "$@"; do
             uname="${field^^}"
             uname="${uname//-/_}"
             field_value="${!field}"
-            eval "${prefix}_${uname}+=(\"\${field_value}\")"
+            printf -v q '%q' "$field_value"
+            eval "${prefix}_${uname}+=($q)"
         done
         (( ++n ))
     done < "$_rows_tmp"

@@ -74,7 +74,12 @@ cache_set() {
     key_file="$CACHE_DIR/$(cache_key "$key")"
 
     mkdir -p "$CACHE_DIR"
-    printf '%s' "$data" > "$key_file"
+    # Atomic write: a direct `>` lets a concurrent cache_get read a
+    # half-written file (parallel plugin fan-out + concurrent CLI runs).
+    local _cs_tmp
+    _cs_tmp=$(mktemp "$CACHE_DIR/.tmp.XXXXXX" 2>/dev/null) || return 1
+    printf '%s' "$data" > "$_cs_tmp" || { rm -f "$_cs_tmp"; return 1; }
+    mv -f "$_cs_tmp" "$key_file" || { rm -f "$_cs_tmp"; return 1; }
     debug "Cache set: $key (${#data} bytes)"
 
     # Evict oldest entries if over limit (runs every set, cheap check)
@@ -95,7 +100,10 @@ cache_delete() {
 # Cache Clear All
 # ═══════════════════════════════════════════════════════════════
 cache_clear() {
-    rm -rf "${CACHE_DIR:?}"/*
+    # :? blocks empty but not "/": CACHE_DIR=/ would expand to `/*`.
+    [[ -n "${CACHE_DIR:-}" && "$CACHE_DIR" != "/" ]] || return 1
+    [[ -d "$CACHE_DIR" ]] || { mkdir -p "$CACHE_DIR"; return 0; }
+    find "$CACHE_DIR" -mindepth 1 -delete 2>/dev/null || rm -rf "${CACHE_DIR:?}"/*
     mkdir -p "$CACHE_DIR"
 }
 

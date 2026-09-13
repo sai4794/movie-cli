@@ -52,8 +52,14 @@ _mc_resolve_redirect() {
     local -a redirect_headers=()
     [[ -n "$referrer" ]] && redirect_headers+=(-H "Referer: $referrer")
     local resolved_url
+    # -4 first (IPv6-broken networks hang otherwise); retry without it so
+    # IPv6-only hosts still resolve.
     resolved_url=$(curl -4 -g -sL --range 0-0 --connect-timeout 5 --max-time 15 \
         -o /dev/null -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null)
+    if [[ -z "$resolved_url" ]]; then
+        resolved_url=$(curl -g -sL --range 0-0 --connect-timeout 5 --max-time 15 \
+            -o /dev/null -w '%{url_effective}' "${redirect_headers[@]}" "$url" 2>/dev/null || true)
+    fi
     if [[ -n "$resolved_url" && "$resolved_url" != "$url" ]]; then
         debug "Redirect resolved: $url -> $resolved_url"
         printf '%s' "$resolved_url"
@@ -89,7 +95,9 @@ _android_launch() {
     [[ "$wait_for_exit" == "1" ]] && am_flags+=(-W)
     # ponytail: --ei position is mpv-android's verified resume extra (milliseconds)
     # Source: MPVActivity.kt parseIntentExtras() — extras.getInt("position", 0) / 1000
-    [[ -n "$start_time" ]] && am_flags+=(--ei position $((start_time * 1000)))
+    # Integer arithmetic: mpv time-pos can be fractional ("2712.5"); a
+    # float breaks $(( )) with a syntax error and fails the launch.
+    [[ -n "$start_time" ]] && am_flags+=(--ei position $((${start_time%.*} * 1000)))
     # ponytail: pass HTTP Referer to mpv-android via Intent extras.
     # mpv-android MPVActivity.kt reads extras.getString("referrer") in parseIntentExtras().
     [[ -n "$referrer" ]] && am_flags+=(--es referrer "$referrer")
@@ -154,11 +162,14 @@ _ios_vlc_http_open() {
     local url="$1"
     local vlc_port="${VLC_HTTP_PORT:-8080}"
     local vlc_pass="${VLC_HTTP_PASSWORD:-}"  # default: no password
-    local auth=""
-    [[ -n "$vlc_pass" ]] && auth="-u :$vlc_pass"
+    # Array form: a password with spaces/globs must not word-split, and
+    # the port is validated so `8080@evil/` userinfo shapes cannot redirect.
+    [[ "$vlc_port" =~ ^[0-9]{1,5}$ ]] || vlc_port=8080
+    local -a auth=()
+    [[ -n "$vlc_pass" ]] && auth=(-u ":$vlc_pass")
     # /browse endpoint opens a URI in VLC's player.
     local _code
-    _code=$(curl -s -o /dev/null -w '%{http_code}' $auth \
+    _code=$(curl -s --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "${auth[@]}" \
         "http://localhost:${vlc_port}/requests/status.xml?command=adddirectory&uri=$(python3 -c "import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=':/?&=%+-._~'))" "$url" 2>/dev/null)" 2>/dev/null) || true
     [[ "$_code" == "200" ]]
 }
@@ -236,6 +247,10 @@ play_video() {
         url=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=":/?&=%+-._~"))' "$url" 2>/dev/null || printf '%s' "$url")
     fi
 
+    # Allowlist first: the torrent branch below interpolates --"$player"
+    # into webtorrent flags, so it must not bypass validate_player.
+    validate_player "$player"
+
     # ponytail: torrent
     if [[ "$url" == magnet:* || "$url" == *.torrent ]]; then
         command -v webtorrent &>/dev/null || die_deps "webtorrent not found. Install: npm install -g webtorrent-cli"
@@ -248,11 +263,16 @@ play_video() {
         return 0
     fi
 
-    validate_player "$player"
-
-    # Set referrer for Vidlink / CineStream CDN URLs
+    # Per-stream referer first (hubcloud-chain workers.dev CDNs hotlink-check);
+    # fall back to the Vidlink default for Vidlink / CineStream CDN URLs.
+    # Strip CR/LF: referers arrive from remote resolver pages and would
+    # otherwise smuggle extra headers into curl -H on old builds.
     local referrer=""
-    if [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
+    stream_referer="${stream_referer//$'\r'/}"
+    stream_referer="${stream_referer//$'\n'/}"
+    if [[ -n "$stream_referer" && "$stream_referer" != "null" ]]; then
+        [[ "$stream_referer" =~ ^https?://[^[:space:]]+$ ]] && referrer="$stream_referer"
+    elif [[ "$url" == *"vidlink"* || "$url" == *"hakunaymatata"* || "$url" == *"vodvidl"* || "$url" == *"stormvv"* ]]; then
         referrer="https://vidlink.pro/"
     fi
 
@@ -288,6 +308,7 @@ play_video() {
             fi
 
             # ponytail: Linux/macOS or Termux:X11 — terminal mpv
+            mkdir -p "${XDG_RUNTIME_DIR:-$HOME/.runtime}" 2>/dev/null || true
             local pos_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-$$"
             local script_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-script-$$.lua"
             cat > "$script_file" << LUAEOF
@@ -348,8 +369,11 @@ LUAEOF
 get_mpv_position() {
     local pos_file="${XDG_RUNTIME_DIR:-$HOME/.runtime}/movie-cli-pos-$$"
     if [[ -f "$pos_file" ]]; then
-        cat "$pos_file" 2>/dev/null
-        return 0
+        # Validate: raw lua-written contents feed arithmetic/--argjson.
+        local _pos
+        _pos=$(cat "$pos_file" 2>/dev/null || true)
+        [[ "$_pos" =~ ^[0-9]+(\.[0-9]+)?$ ]] && { printf '%s' "${_pos%.*}"; return 0; }
+        return 1
     fi
     local sock
     if [[ -n "${SOCKET_DIR:-}" ]]; then

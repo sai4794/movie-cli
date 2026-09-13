@@ -35,11 +35,14 @@ _get_share_dir() {
 
 # Fetch the latest main-branch commit SHA from the GitHub API
 _get_remote_sha() {
-    curl -s --connect-timeout 8 --max-time 15 \
+    # jq first: grepping raw JSON matches the first 40-hex "sha" anywhere
+    # (embedded shas in other fields); the top-level .sha is authoritative.
+    local _sha
+    _sha=$(curl -s --connect-timeout 8 --max-time 15 \
         -H 'Accept: application/vnd.github+json' \
         "${REPO_API}/commits/main" 2>/dev/null \
-        | grep -oE '"sha"[[:space:]]*:[[:space:]]*"[a-f0-9]{40}"' | head -1 \
-        | grep -oE '[a-f0-9]{40}' 2>/dev/null || true
+        | jq -r '.sha // empty' 2>/dev/null || true)
+    [[ "$_sha" =~ ^[a-f0-9]{40}$ ]] && printf '%s' "$_sha" || true
 }
 
 # Check for updates without applying. Prints status; returns 0 if update

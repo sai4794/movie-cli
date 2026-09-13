@@ -191,7 +191,7 @@ plugin_list_seasons() {
             acc+=$'\n'
         done
         if [[ -n "$acc" ]]; then
-            out=$(printf '%b' "$acc" | jq -sc 'sort_by(.season)' 2>/dev/null)
+            out=$(printf '%s' "$acc" | jq -sc 'sort_by(.season)' 2>/dev/null)
         fi
     fi
 
@@ -274,10 +274,13 @@ plugin_get_url() {
     local quality="${2:-720}"
     local movie_id="" episode_id="" detail_json=""
 
-    # Parse id: could be "movieId" or "movieId:season:episode"
+    # Parse id: could be "movieId" or "movieId:season:episode".
+    # Strict: a malformed "123::" must not silently become episode 1.
     if [[ "$id" == *:*:* ]]; then
+        [[ "$id" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] || return 1
         IFS=':' read -r movie_id _s _e <<< "$id"
     else
+        [[ "$id" =~ ^[0-9]+$ ]] || return 1
         movie_id="$id"
     fi
 
@@ -317,7 +320,8 @@ plugin_get_url() {
     lang_names+=("$default_lang")
 
     local _ct_tracks_tmp
-    _ct_tracks_tmp=$(mktemp 2>/dev/null || mktemp -t castle_tracks)
+    _ct_tracks_tmp=$(mktemp 2>/dev/null || mktemp -t castle_tracks) || return 1
+    [[ -n "$_ct_tracks_tmp" ]] || return 1
     printf '%s' "$tracks_json" | jq -r '
         .[] | select(.existIndividualVideo == true and .isDefault != true) |
         "\(.languageId)\t\(.languageName)"
@@ -334,7 +338,8 @@ plugin_get_url() {
     local -a res_codes=()
     local -A res_labels=([0]="360p" [1]="480p" [2]="720p" [3]="1080p")
     local _ct_res_tmp
-    _ct_res_tmp=$(mktemp 2>/dev/null || mktemp -t castle_res)
+    _ct_res_tmp=$(mktemp 2>/dev/null || mktemp -t castle_res) || return 1
+    [[ -n "$_ct_res_tmp" ]] || return 1
     printf '%s' "$detail_json" | jq -r --arg e "${ep_index}" '
         [.data.episodes[]? | select(.number == ($e | tonumber))][0].videos[]? |
         select(.premiumProPermission != true) | .resolution
@@ -347,7 +352,8 @@ plugin_get_url() {
 
     # Query every (language × resolution) combination in parallel
     local tmp_dir
-    tmp_dir=$(mktemp -d)
+    tmp_dir=$(mktemp -d) || return 1
+    [[ -n "$tmp_dir" && -d "$tmp_dir" ]] || return 1
     local pids=() idx=0
 
     local li=0
@@ -397,7 +403,7 @@ plugin_get_url() {
         li=$((li + 1))
     done
 
-    wait "${pids[@]}" 2>/dev/null || true
+    (( ${#pids[@]} )) && wait "${pids[@]}" 2>/dev/null || true
 
     # Merge all results, deduplicate by URL
     local merged="[]"

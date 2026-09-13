@@ -46,6 +46,10 @@ load_config_file() {
         [[ -z "$line" ]] && continue
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
+        # Bare keys (no `=`) are typos — skip instead of assigning the
+        # key name as its own value (e.g. bare `PLAYER` → CONF_PLAYER="PLAYER").
+        [[ "$line" == *"="* ]] || continue
+
         # Parse key=value (handle spaces around =)
         local key="${line%%=*}"
         local value="${line#*=}"
@@ -67,20 +71,24 @@ load_config_file() {
         # Skip if key is empty after trim
         [[ -z "$key" ]] && continue
 
+        # Stored for the post-case debug: an env override skips the
+        # assignment, and logging value-as-applied would misreport it.
+        local assigned=0
+
         # Validate key against allowlist
         if [[ " $_VALID_KEYS " == *" $key "* ]]; then
             # Config file provides defaults — do NOT override env vars.
             # Priority: CLI flags > env vars > config file > built-in defaults
             case "$key" in
-                PLAYER)    [[ -z "${PLAYER_SET:-}" ]] && CONF_PLAYER="$value" ;;
-                QUALITY)   [[ -z "${QUALITY_SET:-}" ]] && CONF_QUALITY="$value" ;;
-                PLUGIN)    [[ -z "${PLUGIN_SET:-}" ]] && CONF_PLUGIN="$value" ;;
-                VERBOSE)   [[ -z "${VERBOSE_SET:-}" ]] && CONF_VERBOSE="$value" ;;
-                DEBUG)     [[ -z "${DEBUG_SET:-}" ]] && CONF_DEBUG="$value" ;;
-                QUIET)     [[ -z "${QUIET_SET:-}" ]] && CONF_QUIET="$value" ;;
-                NO_COLOR)  [[ -z "${NO_COLOR_SET:-}" ]] && CONF_NO_COLOR="$value" ;;
+                PLAYER)    [[ -z "${PLAYER_SET:-}" ]] && { CONF_PLAYER="$value"; assigned=1; } ;;
+                QUALITY)   [[ -z "${QUALITY_SET:-}" ]] && { CONF_QUALITY="$value"; assigned=1; } ;;
+                PLUGIN)    [[ -z "${PLUGIN_SET:-}" ]] && { CONF_PLUGIN="$value"; assigned=1; } ;;
+                VERBOSE)   [[ -z "${VERBOSE_SET:-}" ]] && { CONF_VERBOSE="$value"; assigned=1; } ;;
+                DEBUG)     [[ -z "${DEBUG_SET:-}" ]] && { CONF_DEBUG="$value"; assigned=1; } ;;
+                QUIET)     [[ -z "${QUIET_SET:-}" ]] && { CONF_QUIET="$value"; assigned=1; } ;;
+                NO_COLOR)  [[ -z "${NO_COLOR_SET:-}" ]] && { CONF_NO_COLOR="$value"; assigned=1; } ;;
             esac
-            debug "Config: $key=$value"
+            (( assigned )) && debug "Config: $key=$value" || debug "Config: $key skipped (env override)"
         else
             warn "Unknown config key: $key (in $conf_file)"
         fi
@@ -136,6 +144,12 @@ VERBOSE=0
 
 # Debug output (0 or 1)
 DEBUG=0
+
+# Suppress non-essential output (0 or 1)
+QUIET=0
+
+# Disable colored output (0 or 1)
+NO_COLOR=0
 EOF
     chmod 600 "$conf_file"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 # DudeFilms plugin for movie-cli
-# WordPress movie site (dudefilms.casa, rotates) — Bollywood/South
+# WordPress movie site (dudefilms.garden, rotates) — Bollywood/South
 # Indian/multi-audio content. Search via ?s=, detail page → 
 # dflinks.online/archives/... link pages → hubcloud drive chain
 # (the same hubcloud → gamerxyt.com/hubcloud.php resolver → R2/
@@ -14,7 +14,7 @@
 #                                         dl.*.workers.dev/...mkv + gdlink/file
 #   hubcloud drive → gamerxyt resolver → r2/workers.dev direct streams
 #
-# Domain rotation: phisher98/tvvvv/domains.json (key "dudefilms").
+# Domain rotation: phisher98/TVVVV/domains.json (key "dudefilms").
 # ═══════════════════════════════════════════════════════════════
 
 [[ -f "${LIB_DIR:-}/pluginsdk.sh" ]] && source "${LIB_DIR}/pluginsdk.sh"
@@ -28,12 +28,12 @@ PLUGIN_REQUIRES=("curl" "jq" "python3")
 PLUGIN_AUTHOR="movie-cli"
 PLUGIN_DESCRIPTION="Movies from DudeFilms (hubcloud drive chain)"
 
-_DF_BASE="https://dudefilms.casa"
+_DF_BASE="https://dudefilms.garden"
 _DF_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 _DF_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_DF_UA")
 _DF_ALLOW_HOSTS=""
 # Live domain list — same source the phisher CloudStream extensions use
-_DF_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/tvvvv/refs/heads/main/domains.json"
+_DF_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
 _DF_DOMAINS_CACHE_KEY="dudefilms_domains"
 _DF_BASE_USER_SET=0   # 1 = user set BASE_URL in conf (wins over auto-rotation)
 
@@ -316,6 +316,7 @@ plugin_get_url() {
     # each archive belongs to the nearest preceding "Season N" heading.
     local arch_links
     if [[ -n "$season" ]]; then
+        [[ "$season" =~ ^[0-9]+$ ]] || die_plugin "Invalid episode id: $id"
         arch_links=$(printf '%s' "$html" | python3 -c '
 import sys, re
 page = sys.stdin.read()
@@ -364,7 +365,7 @@ plugin_list_seasons() {
     # Parse ALL "Season N" headings from the page (dedupe, ascending).
     # Multi-season posts (e.g. "Season 1-2") have one heading per season.
     local seasons_json
-    seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | jq -c '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
+    seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | awk '{print $1+0}' | jq -sc '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
 
     # Fallback: title range like "Season 1-2" or "Season 1 – 2"
     if [[ -z "$seasons_json" || "$seasons_json" == "[]" ]]; then
@@ -422,10 +423,14 @@ plugin_list_episodes() {
     [[ "$ep_count" =~ ^[0-9]+$ ]] && ep_count=$((10#$ep_count)) || ep_count=1
     (( ep_count < 1 )) && ep_count=1
 
+    # Normalize season for --argjson (rejects "01"/junk).
+    local season_num="$season_number"
+    [[ "$season_num" =~ ^[0-9]+$ ]] && season_num=$((10#$season_num)) || season_num=1
+
     # Emit one episode entry per found episode — batched JSONL, one jq pass
     local lines="" i
     for (( i = 1; i <= ep_count; i++ )); do
-        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
+        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_num" \
             '{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}')"$'\n'
     done
     jq -s '.' <<< "$lines"

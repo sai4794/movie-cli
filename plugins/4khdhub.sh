@@ -93,6 +93,12 @@ _4kh_resolve_link() {
         *hubdrive*|*hubcloud*)
             _4kh_resolve_drive "$url"
             ;;
+        *)
+            # Unsupported mirror host — callers treat empty output as
+            # unresolvable; log for debugging rather than failing silently.
+            debug "4KHDHub: unsupported mirror host, skipping: $url"
+            return 1
+            ;;
     esac
 }
 
@@ -204,11 +210,15 @@ plugin_get_url() {
     # episode-download-item whose file title matches SxxEyy.
     local mirror_links
     if [[ -n "$series_id" ]]; then
-        mirror_links=$(printf '%s' "$html" | python3 -c '
+        # Numeric guard: unvalidated S/E crash int() with a traceback that
+    # surfaces as the misleading "No mirror links".
+    [[ "$season" =~ ^[0-9]+$ && "$episode" =~ ^[0-9]+$ ]] || die_plugin "Invalid episode id: $id"
+    mirror_links=$(printf '%s' "$html" | python3 -c '
 import sys, re
 html = sys.stdin.read()
-season, episode = sys.argv[1], sys.argv[2]
-pat = re.compile(r"S%02dE%02d" % (int(season), int(episode)))
+season, episode = int(sys.argv[1]), int(sys.argv[2])
+# Tolerant S/E label: S5E3, S05E03, lowercase, separators (S05-E03, S05_E03)
+pat = re.compile(r"[Ss]0*%d[\W_]*[Ee]0*%d\b" % (season, episode))
 for m in re.finditer(r"episode-download-item(.*?)(?=episode-download-item|$)", html, re.S):
     block = m.group(1)
     if pat.search(block):

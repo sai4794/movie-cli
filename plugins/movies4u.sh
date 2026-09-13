@@ -25,8 +25,8 @@ PLUGIN_DESCRIPTION="Movies from Movies4u (m4ulinks → hubcloud/gdlink/gdflix ch
 _M4U_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 _M4U_CURL=(-sL --connect-timeout 8 --max-time 25 -A "$_M4U_UA")
 _M4U_ALLOW_HOSTS=""
-_M4U_BASE="https://new3.movies4u.clinic"
-_M4U_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/tvvvv/refs/heads/main/domains.json"
+_M4U_BASE="https://new6.movies4u.clinic"
+_M4U_DOMAINS_URL="https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json"
 _M4U_DOMAINS_CACHE_KEY="movies4u_domains"
 _M4U_BASE_USER_SET=0
 
@@ -41,6 +41,7 @@ _load_m4u_config() {
     sdk_conf_load "$CONF_DIR/movies4u.conf" M4U BASE_URL ALLOW_HOSTS
     [[ -n "${M4U_BASE_URL+x}" && -n "${M4U_BASE_URL}" ]] && { _M4U_BASE="$M4U_BASE_URL"; _M4U_BASE_USER_SET=1; }
     [[ -n "${M4U_ALLOW_HOSTS+x}" ]] && _M4U_ALLOW_HOSTS="$M4U_ALLOW_HOSTS"
+    return 0
 }
 
 # Auto domain rotation — same source the phisher CloudStream extensions use
@@ -282,17 +283,100 @@ plugin_search() {
     _load_m4u_config
     _m4u_load_domains
 
-    local html
-    html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
-    [[ -z "$html" ]] && return 1
+    # Site redesign: /?s=<query> now serves a JS shell (results render
+    # client-side from /lookup.php?q=... returning {hits:[...]}). Scrape
+    # the JSON endpoint directly; fall back to the legacy WP page only
+    # when lookup is unreachable or returns non-JSON.
+    local resp wp_results=""
+    resp=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" \
+        -G "${_M4U_BASE}/lookup.php" \
+        --data-urlencode "q=$query" \
+        --data-urlencode "page=1" \
+        --data-urlencode "per_page=30" 2>/dev/null || true)
+    if [[ -n "$resp" ]] && printf '%s' "$resp" | jq -e '.hits' >/dev/null 2>&1; then
+        wp_results=$(_m4u_parse_lookup_json "$resp" "$query")
+    else
+        local html
+        html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" --data-urlencode "s=$query" 2>/dev/null) || return 1
+        [[ -z "$html" ]] && return 1
+        wp_results=$(_m4u_parse_wp_search_page "$html" "$query")
+    fi
 
-    local wp_results
-    wp_results=$(_m4u_parse_wp_search_page "$html" "$query")
-
-    # Cinemeta fallback (shared orchestrator): when the WP site search
+    # Cinemeta fallback (shared orchestrator): when the site search
     # returns sparse results, query Cinemeta for canonical titles and
     # re-search this site by title+year (CSX CineStream Movies4u behavior).
     cinemeta_search_fallback "$query" "$wp_results" _m4u_research_site
+}
+
+# Parse /lookup.php JSON ({hits:[{post_title, permalink, post_thumbnail}]})
+# into result JSON. Same cleaning + relevance filter as the legacy WP
+# parser so ranking behavior is unchanged.
+_m4u_parse_lookup_json() {
+    printf '%s' "$1" | python3 -c '
+import sys, re, json, html as h
+raw = sys.stdin.read()
+query = sys.argv[1].lower()
+try:
+    data = json.loads(raw)
+except Exception:
+    print("[]")
+    sys.exit(0)
+hits = data.get("hits", []) if isinstance(data, dict) else []
+out = []
+
+def norm(s):
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+qtokens = [t for t in re.split(r"[^a-z0-9]+", query) if len(t) >= 3]
+if not qtokens:
+    qtokens = [re.sub(r"[^a-z0-9]", "", query)]
+qnorm = norm(query)
+
+for hit in hits:
+    if not isinstance(hit, dict):
+        continue
+    title = h.unescape(str(hit.get("post_title", ""))).strip()
+    perm = str(hit.get("permalink", "")).strip()
+    if not title or not perm:
+        continue
+    url = perm if perm.startswith("http") else ("https://x/" + perm.lstrip("/"))
+    if any(x in url for x in ("/tag/", "/category/", "/page/", "/author/", "feed", "#", "?s=", "wp-content")):
+        continue
+    if not re.search(r"download|movie|season|series|\b\d{4}\b", url + " " + title, re.I):
+        continue
+    tnorm = norm(title)
+    twords_lower = re.split(r"[^a-z0-9]+", title.lower())
+    if qnorm and qnorm in tnorm:
+        pass
+    elif not all(any(t == w for w in twords_lower) for t in qtokens):
+        continue
+    slug = perm.rstrip("/").rsplit("/", 1)[-1]
+    if not slug:
+        continue
+    tvtype = "series" if re.search(r"season|series|web.?series", title, re.I) else "movie"
+    year = ""
+    ym = re.search(r"\((\d{4})\)|(19|20)\d{2}", title)
+    if ym:
+        year = ym.group(1) or ym.group(0)
+    ctitle = re.sub(r"^Download\s+", "", title, flags=re.I)
+    ctitle = re.sub(r"\[[^\]]*\]", " ", ctitle)
+    ctitle = re.sub(r"\{[^}]*\}", " ", ctitle)
+    ctitle = re.sub(r"\s*(4K|[0-9]+p)\s*.*$", "", ctitle, flags=re.I)
+    ctitle = re.sub(r"\s*(?:\bDual Audio\b|\bMulti Audio\b|\bWEB-? ?DL\b|\bWEBRip\b|\bBluRay\b|\bHDTS\b|\bHDTC\b|\bHDCAM\b|\bCAMRip\b|\bPREHD\b|\bx264\b|\bx265\b|\b10Bit\b|\bHEVC\b|\bESub[s]?\b|\bFull Movie\b|\bWeb Series\b|\bWEBSeries\b|\bAnime Series\b|\bSeries\b|\bHindi Dubbed\b|\bHindi\b|\bEnglish\b|\bTelugu\b|\bTamil\b|\bKannada\b|\bMalayalam\b|\bPunjabi\b|\bDubbed\b|\bORG\b|\bMovie\b|\bHQ\b|\bV[0-9]+\b|\bNetFlix\b|\bNetflix\b|\bAmazon Prime\b|\bPrime Video\b|\bHotstar\b|\bDisney\+? ?Hotstar\b|\bJioCinema\b|\bJio\b|\bMX Player\b|\bSonyLiv\b|\bZee5\b|\bApple TV\b|\bHBO Max\b|\bHBO Original\b|\bHBO\b)\s*", " ", ctitle, flags=re.I)
+    ctitle = re.sub(r"\s+", " ", ctitle)
+    ctitle = ctitle.strip(" -–|")
+    ctitle = re.sub(r"\s+", " ", ctitle).strip()
+    poster = hit.get("post_thumbnail") or None
+    out.append({"id": slug, "title": ctitle, "type": tvtype, "year": year, "rating": None, "poster": poster})
+
+seen = set()
+dedup = []
+for o in out:
+    if o["id"] not in seen:
+        seen.add(o["id"])
+        dedup.append(o)
+print(json.dumps(dedup))
+' "$2" 2>/dev/null || printf '[]'
 }
 
 # WP search-page parser with relevance filter. WordPress falls back to a
@@ -356,6 +440,20 @@ print(__import__("json").dumps(dedup))
 # Prints line-delimited JSON objects (the orchestrator merges/dedupes).
 _m4u_research_site() {
     local cname="$1" cyear="$2" ctype="${3:-movie}"
+    # Same lookup.php endpoint as plugin_search (site is JS-rendered).
+    local site_resp
+    site_resp=$(curl "${_M4U_CURL[@]}" -H "Referer: ${_M4U_BASE}/" \
+        -G "${_M4U_BASE}/lookup.php" \
+        --data-urlencode "q=${cname} ${cyear}" \
+        --data-urlencode "page=1" \
+        --data-urlencode "per_page=10" 2>/dev/null || true)
+    if [[ -n "$site_resp" ]] && printf '%s' "$site_resp" | jq -e '.hits' >/dev/null 2>&1; then
+        # Keep the Cinemeta type (original behavior) rather than the
+        # title-derived one — the orchestrator merges these with existing hits.
+        _m4u_parse_lookup_json "$site_resp" "${cname} ${cyear}" \
+            | jq -c --arg t "$ctype" '.[] | .type = $t' 2>/dev/null || true
+        return 0
+    fi
     local site_html
     site_html=$(curl "${_M4U_CURL[@]}" -G "${_M4U_BASE}/" \
         --data-urlencode "s=${cname} ${cyear}" 2>/dev/null || true)
@@ -456,6 +554,7 @@ plugin_get_url() {
     # btn-zip (BATCH/ZIP) links which are zip packs, not per-episode pages.
     local num_links
     if [[ -n "$season" ]]; then
+        [[ "$season" =~ ^[0-9]+$ ]] || die_plugin "Invalid episode id: $id"
         num_links=$(printf '%s' "$html" | python3 -c "
 import sys, re
 html = sys.stdin.read()
@@ -515,7 +614,7 @@ plugin_list_seasons() {
     [[ -z "$html" ]] && return 1
 
     local seasons_json
-    seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | jq -c '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
+    seasons_json=$(printf '%s' "$html" | grep -oiE 'Season[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | awk '{print $1+0}' | jq -sc '[.[] | {id: (.|tostring), title: ("Season " + (.|tostring)), number: .}]' 2>/dev/null || true)
 
     # Fallback: title range like "Season 1-2" or "Season 1 – 2"
     if [[ -z "$seasons_json" || "$seasons_json" == "[]" ]]; then
@@ -524,6 +623,9 @@ plugin_list_seasons() {
         local s1 s2
         s1=$(printf '%s' "$range" | awk '{print $1}')
         s2=$(printf '%s' "$range" | awk '{print $2}')
+        # Force base-10: "Season 08-09" aborts arithmetic as octal.
+        [[ "$s1" =~ ^[0-9]+$ ]] && s1=$((10#$s1)) || s1=""
+        [[ "$s2" =~ ^[0-9]+$ ]] && s2=$((10#$s2)) || s2=""
         if [[ -n "$s1" && -n "$s2" && "$s2" -gt "$s1" ]]; then
             # Batched JSONL → one jq pass (was one fork per season)
             local lines="" i
@@ -551,6 +653,7 @@ plugin_list_episodes() {
     # m4ulinks page for this season: assign each number to the nearest
     # preceding "Season N" heading, take the first (Download Links) page.
     local target
+    [[ "$season_number" =~ ^[0-9]+$ ]] || return 1
     target=$(printf '%s' "$html" | python3 -c '
 import sys, re
 page = sys.stdin.read()
@@ -578,11 +681,19 @@ for l in links:
     ep_count=$(printf '%s' "$page" | grep -oE 'Episodes?[[:space:]]*:?[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -un | tail -1 2>/dev/null || echo 0)
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count=$(printf '%s' "$page" | grep -cE 'downloads-btns-div' 2>/dev/null || true)
     [[ -z "$ep_count" || "$ep_count" == "0" ]] && ep_count="1"
+    # Force base-10: "Episodes: 08/09" yields "08", which bash reads as OCTAL.
+    if [[ "$ep_count" =~ ^[0-9]+$ ]]; then ep_count=$((10#$ep_count)); else ep_count=1; fi
+    (( ep_count < 1 )) && ep_count=1
+    # Cap: a bogus "Episodes: 1000" must not fork 1000 jq processes.
+    (( ep_count > 200 )) && ep_count=200
+    # Normalize season for --argjson (rejects "01"/junk).
+    local season_num="$season_number"
+    [[ "$season_num" =~ ^[0-9]+$ ]] && season_num=$((10#$season_num)) || season_num=1
 
     # Batched JSONL → one jq pass (was one jq fork per episode)
     local lines="" i
     for (( i = 1; i <= ep_count; i++ )); do
-        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_number" \
+        lines+="$(jq -nc --arg id "${series_id}:${season_number}:${i}" --arg t "Episode $i" --argjson n "$i" --argjson s "$season_num" \
             '{"id": $id, "title": $t, "number": $n, "episode": $n, "season": $s}')"$'\n'
     done
     jq -s '.' <<< "$lines"

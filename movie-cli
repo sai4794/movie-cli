@@ -33,12 +33,11 @@ declare -A LOADED_PLUGINS=()
 # Run a plugin function under the shell-option state the host expects.
 #
 # Plugins historically call `set +euo pipefail` inside their Cinemeta
-# fallbacks. In all-plugin search that runs inside a throwaway subshell,
-# but in single-plugin paths it executes in THIS shell and permanently
-# disabled errexit/nounset/pipefail for everything afterwards — masking
-# real bugs downstream. The wrapper snapshots the option state, lets the
-# plugin run however it wants, then restores strict mode. Exit codes pass
-# through unchanged, so behavior is identical apart from the leak fix.
+# fallbacks (movieblast still does). Every call site invokes run_plugin
+# inside a command substitution — a subshell — so option flips can never
+# reach the host shell even without this wrapper; the snapshot/restore is
+# belt-and-braces for direct (non-$()) callers. Exit codes pass through
+# unchanged, so behavior is identical apart from the leak fix.
 run_plugin() {
     local saved_opts
     saved_opts=$(set +o)
@@ -131,6 +130,10 @@ sort_streams() {
 # two curls at once, so a 60-stream episode fanned out to 120 sockets and
 # saturated slow links/CDN rate limits. Workers are capped instead.
 VERIFY_MAX_JOBS="${VERIFY_MAX_JOBS:-16}"
+# Env-controlled fork count — clamp so VERIFY_MAX_JOBS=100000 cannot DoS.
+[[ "$VERIFY_MAX_JOBS" =~ ^[0-9]+$ ]] || VERIFY_MAX_JOBS=16
+(( VERIFY_MAX_JOBS >= 1 )) || VERIFY_MAX_JOBS=1
+(( VERIFY_MAX_JOBS <= 64 )) || VERIFY_MAX_JOBS=64
 
 # Probe one stream URL; on success write "$1/pass_$2" (index marker).
 # Runs inside its own subshell — exits don't affect the host shell.
@@ -154,10 +157,13 @@ _verify_stream_probe() {
     # Capture bytes first, then decode: xxd ships with vim and is missing
     # on some BusyBox/minimal userlands (e.g. iOS/iSH images) — without a
     # fallback an empty hex silently rejects every live stream as dead.
+    # `|| true`: head -c exits after 16 bytes → curl gets SIGPIPE (141)
+    # → pipefail would otherwise kill this probe under set -e (verified: a
+    # full-page curl|head exits 141, dropping the stream without probing it).
     head_bytes=$(curl -s \
         -L --connect-timeout 4 --max-time 8 \
         "${referer_arg[@]}" \
-        "$url" 2>/dev/null | head -c 16)
+        "$url" 2>/dev/null | head -c 16 || true)
     hex=$(printf '%s' "$head_bytes" | xxd -p 2>/dev/null)
     [[ -z "$hex" ]] && hex=$(printf '%s' "$head_bytes" | od -An -tx1 | tr -d ' \n')
     # Curl 2: get HTTP status code
@@ -166,10 +172,13 @@ _verify_stream_probe() {
     # but STILL prints the received code — that is a live stream, and
     # the first-bytes check above already validated it as video. Only
     # a code of 000 (no response) or non-2xx fails.
+    # `|| true`: curl exits 63 on --max-filesize abort (verified live:
+    # rc=63 with the 2xx code still printed) — without this the probe dies
+    # under set -e before writing its pass marker, dropping live streams.
     http_code=$(curl -so /dev/null -w "%{http_code}" \
         -L --connect-timeout 4 --max-time 8 --max-filesize 3145728 \
         "${referer_arg[@]}" \
-        "$url" 2>/dev/null)
+        "$url" 2>/dev/null || true)
     # Reject non-2xx responses (000 = connection failed / no response)
     [[ ! "$http_code" =~ ^(200|206)$ ]] && exit 0
     # Reject empty hex (nothing returned)
@@ -207,7 +216,7 @@ _verify_stream_probe() {
 }
 
 verify_streams() {
-    local json="$1"
+    local json="${1:-}"
     [[ -z "$json" || "$json" == "[]" ]] && { printf '[]'; return; }
 
     local total
@@ -215,7 +224,8 @@ verify_streams() {
 
     # Extract URLs + optional per-stream referers in a single jq call
     local tmp_verify
-    tmp_verify=$(mktemp -d)
+    tmp_verify=$(mktemp -d) || return 1
+    [[ -n "$tmp_verify" && -d "$tmp_verify" ]] || return 1
     printf '%s' "$json" | jq -r 'to_entries[] | "\(.key)\t\(.value.url // "")\t\(.value.referer // "")"' \
         2>/dev/null > "$tmp_verify/urls.tsv"
 
@@ -234,7 +244,8 @@ verify_streams() {
         fi
     done < "$tmp_verify/urls.tsv"
 
-    wait "${pids[@]}" 2>/dev/null || true
+    # Guard: bare `wait` with no jobs waits on unrelated background jobs.
+    (( ${#pids[@]} )) && wait "${pids[@]}" 2>/dev/null || true
 
     # Collect valid indices and build result in a single jq call
     local valid_indices="[]"
@@ -311,6 +322,8 @@ play_with_fallback() {
 
         local played=0 first=1
         for entry in "${play_order[@]}"; do
+            # Split on the FIRST tab: URLs never contain raw tabs (they
+            # arrive percent-encoded), referers are https URLs either.
             local url="${entry%%	*}"
             local stream_referer="${entry#*	}"
             if (( first == 0 )); then
@@ -322,7 +335,9 @@ play_with_fallback() {
 
             local rc=0
             status_msg "Playing: $label"
-            local saved_no_detach="$NO_DETACH"
+            # `:-0`: NO_DETACH is unset on the --continue path (only
+            # main() exports it), and bare $NO_DETACH dies under set -u.
+            local saved_no_detach="${NO_DETACH:-0}"
             NO_DETACH=1
             play_video "$url" "$start_time" "$stream_referer" || rc=$?
             NO_DETACH="$saved_no_detach"
@@ -388,7 +403,8 @@ _search_all_plugins() {
     local merged_results="[]"
     local pids=() idx=0
     local tmp_dir
-    tmp_dir=$(mktemp -d)
+    tmp_dir=$(mktemp -d) || return 1
+    [[ -n "$tmp_dir" && -d "$tmp_dir" ]] || return 1
     for p_name in "${!LOADED_PLUGINS[@]}"; do
         (
             source "${LOADED_PLUGINS[$p_name]}"
@@ -438,7 +454,9 @@ _search_results() {
         if [[ "${NO_CACHE:-0}" != "1" ]]; then
             results=$(cache_get "$cache_key" "$CACHE_TTL_SEARCH" 2>/dev/null) || true
         fi
-        if [[ -z "$results" ]]; then
+        # `|| "[]"`: the all-plugin branch above treats cached [] as a
+        # miss and re-searches; match it so empty results refetch here too.
+        if [[ -z "$results" || "$results" == "[]" ]]; then
             status_msg "Searching..."
             # run_plugin: single-plugin search executes in THIS shell — keep
             # any `set +euo pipefail` inside the plugin from leaking out.
@@ -471,7 +489,8 @@ collect_streams() {
     local json="$1"
     _STREAMS=()
     local obj _streams_tmp
-    _streams_tmp=$(mktemp 2>/dev/null || mktemp -t movie_cli_streams)
+    _streams_tmp=$(mktemp 2>/dev/null || mktemp -t movie_cli_streams) || return 1
+    [[ -n "$_streams_tmp" ]] || return 1
     json_objects "$json" > "$_streams_tmp" 2>/dev/null || true
     while IFS= read -r obj; do
         [[ -n "$obj" ]] && _STREAMS+=("$obj")
@@ -484,6 +503,10 @@ _save_playback_progress() {
     local id="$1"
     local end_pos
     end_pos=$(get_mpv_position 2>/dev/null || echo 0)
+    # Validate: pos-file contents are untrusted input; a float/non-numeric
+    # value aborts arithmetic under set -e (get_mpv_position already floors
+    # valid floats, this guards any other source).
+    [[ "$end_pos" =~ ^[0-9]+$ ]] || end_pos=0
     (( end_pos > 0 )) && history_update_progress "$id" "$end_pos" "$end_pos" || true
 }
 
@@ -544,12 +567,18 @@ search_and_play() {
     SELECT_N=""
     [[ "$selected_display" == "<- Back" ]] && { ui_info "Exiting."; exit 0; }
 
+    # First display-string match wins for duplicate titles (select_item
+    # returns the string, not an index) — but skip entries with missing ids
+    # (jq renders those as the literal string "null", which used to route
+    # into playback with id "null"). An empty/missing type means movie.
     local selected_id="" selected_type="" selected_plugin_match="" selected_title=""
     i=0
     while (( i < count )); do
         if [[ "${display_titles[$i]}" == "$selected_display" ]]; then
+            [[ "${R_ID[$i]}" == "" || "${R_ID[$i]}" == "null" ]] && { i=$((i + 1)); continue; }
             selected_id="${R_ID[$i]}"
             selected_type="${R_TYPE[$i]:-movie}"
+            [[ "$selected_type" == "null" || -z "$selected_type" ]] && selected_type="movie"
             selected_plugin_match="${R_PLUGIN[$i]}"
             selected_title="${R_TITLE[$i]}"
             break
@@ -685,10 +714,10 @@ search_and_play() {
                 fi
 
                 local selected_url
-                selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+                # `// empty`: missing/null url yields literal "null" (passes -z).
+                selected_url=$(printf '%s' "$selected_stream" | jq -r '.url // empty' 2>/dev/null)
                 [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title - $ep_title"
 
-                history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
                 status_msg "Playing: $selected_title - $ep_title (S${ep_season}E${ep_num})"
 
                 # Auto next-mirror: on playback failure try remaining streams, then
@@ -696,6 +725,9 @@ search_and_play() {
                 if ! play_with_fallback "$qualities_json" "$ep_id" "$selected_title - $ep_title (S${ep_season}E${ep_num})" "$selected_url" "" "$quality"; then
                     die_plugin "No playable streams for: $selected_title - $ep_title"
                 fi
+                # Record AFTER success: a failed play must not advance the
+                # --continue pointer.
+                history_add "$selected_title" "$selected_plugin_match" "$ep_id" "series" "$ep_season" "$ep_num"
                 # ponytail: save final position for --continue
                 _save_playback_progress "$ep_id"
 
@@ -769,12 +801,14 @@ search_and_play() {
     # Movie playback flow
     status_msg "Resolving streams..."
     prof_start "stream_resolution"
-    # `|| true`: plugin die_plugin (exit 3) inside the substitution must not
-    # kill the CLI — the no-streams retry/back menu below handles it.
-    qualities_json=$(run_plugin plugin_get_url "$selected_id" "$quality" 2>/dev/null) || true
-    if [[ -z "$qualities_json" || "$qualities_json" == "[]" ]] || [[ "$(printf '%s' "$qualities_json" | verify_streams 2>/dev/null)" == "[]" ]]; then
-        qualities_json=$(verify_streams "$(sort_streams "$qualities_json")" 2>/dev/null)
-    fi
+    # Standard resolution pipeline (plugin_get_url → sort → verify), same as
+    # the series flow and --continue. resolve_streams_for already survives a
+    # plugin die_plugin (exit 3) and prints [] — the retry/back menu below
+    # handles the empty case.
+    # (The old code piped plugin output INTO verify_streams, which only reads
+    # $1 — the probe always saw empty input, so movies played raw unverified
+    # output while paying for a wasted verification round on failure.)
+    qualities_json=$(resolve_streams_for "$selected_id" "$quality")
     prof_end
 
     spinner_stop
@@ -800,16 +834,18 @@ search_and_play() {
     [[ "$selected_stream" == "<- Back" ]] && continue
 
     local selected_url
-    selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+    # `// empty`: see series flow above — literal "null" must not play.
+    selected_url=$(printf '%s' "$selected_stream" | jq -r '.url // empty' 2>/dev/null)
     [[ -z "$selected_url" ]] && die_plugin "No video URL for: $selected_title"
 
-    history_add "$selected_title" "$selected_plugin_match" "$selected_id" "movie"
     prof_start "player_launch"
     # Auto next-mirror: on playback failure try remaining streams, then
     # re-resolve fresh once (CloudStream behavior)
     if ! play_with_fallback "$qualities_json" "$selected_id" "$selected_title" "$selected_url" "" "$quality"; then
         die_plugin "No playable streams for: $selected_title"
     fi
+    # Record AFTER success (see series flow): failures must not pollute history.
+    history_add "$selected_title" "$selected_plugin_match" "$selected_id" "movie"
     prof_end
     # ponytail: save final position for --continue
     _save_playback_progress "$selected_id"
@@ -920,10 +956,15 @@ main() {
         selected_stream="$_SELECT_ITEM_RESULT"
 
         local selected_url
-        selected_url=$(printf '%s' "$selected_stream" | jq -r '.url' 2>/dev/null)
+        # `// empty`: jq -r '.url' on a missing/null url yields the literal
+        # string "null", which passes -z and gets played as a URL.
+        selected_url=$(printf '%s' "$selected_stream" | jq -r '.url // empty' 2>/dev/null)
         [[ -z "$selected_url" ]] && die_plugin "No video URL"
 
         local start_time=""
+        # Validate: history progress is file-fed data; a non-numeric value
+        # aborts arithmetic under set -e.
+        [[ "$last_progress" =~ ^[0-9]+$ ]] || last_progress=0
         (( last_progress > 0 )) && start_time="$last_progress"
 
         status_msg "Resuming: $(printf '%s' "$last_entry" | jq -r '.title')"
@@ -942,10 +983,12 @@ main() {
         status_msg "Checking dependencies..."
         check_deps
         printf "${C_CYAN}Search movie:${C_RESET} "
+        # `|| true`: bare read fails on EOF/closed stdin and set -e
+        # would exit before the "Query cannot be empty" error below.
         if [[ -t 0 ]]; then
-            read -r query < /dev/tty
+            read -r query < /dev/tty || true
         else
-            read -r query
+            read -r query || true
         fi
     fi
 

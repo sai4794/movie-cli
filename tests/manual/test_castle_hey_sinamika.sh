@@ -2,7 +2,7 @@
 # Test: How many streams does castle plugin return for "Hey Sinamika"?
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$SCRIPT_DIR/lib/init.sh"
 source "$SCRIPT_DIR/lib/errors.sh"
 source "$SCRIPT_DIR/lib/config.sh"

@@ -31,6 +31,12 @@ history_add() {
     local season="${5:-null}"
     local episode="${6:-null}"
 
+    # Validate --argjson inputs: a non-JSON season/episode makes jq fail and
+    # (with `local entry` masking status) appends a blank line that breaks
+    # every later `jq -s` reader. Coerce junk to null instead.
+    [[ "$season" =~ ^(null|[0-9]+)$ ]] || season="null"
+    [[ "$episode" =~ ^(null|[0-9]+)$ ]] || episode="null"
+
     local ts
     ts=$(date_iso)
 
@@ -47,6 +53,9 @@ history_add() {
         --argjson e "$episode" \
         '{v:1, title:$t, plugin:$p, id:$i, type:$ty, ts:$ts, season:$s, episode:$e, progress:0, duration:0}')
 
+    # Never append a blank line: entry is empty only if jq failed, and a
+    # blank line permanently breaks `jq -s` readers (update/delete).
+    [[ -n "$entry" ]] || return 1
     mkdir -p "$DATA_DIR"
     printf '%s\n' "$entry" >> "$HISTORY_FILE"
     debug "History added: $title"
@@ -59,6 +68,11 @@ history_update_progress() {
     local id="$1"
     local progress="$2"
     local duration="${3:-0}"
+
+    # Validate: non-numeric input fails --argjson silently (stderr hidden),
+    # skipping the update with no signal. Coerce junk to 0.
+    [[ "$progress" =~ ^[0-9]+$ ]] || progress=0
+    [[ "$duration" =~ ^[0-9]+$ ]] || duration=0
 
     [[ -f "$HISTORY_FILE" ]] || return 0
 
@@ -97,8 +111,13 @@ history_get_last() {
 # ═══════════════════════════════════════════════════════════════
 history_list() {
     local limit="${1:-20}"
+    # Guard: `tail -"x"` breaks on non-numeric/negative limits.
+    [[ "$limit" =~ ^[0-9]+$ ]] || limit=20
+    (( limit >= 1 )) || limit=20
     [[ -f "$HISTORY_FILE" ]] || return 0
-    tail -"$limit" "$HISTORY_FILE" | tac | while IFS= read -r line; do
+    # tac is missing on macOS/BSD (a supported platform) — fall back to
+    # tail -r. Either reversal failing must not kill the list under pipefail.
+    tail -"$limit" "$HISTORY_FILE" | (tac 2>/dev/null || tail -r 2>/dev/null || cat) | while IFS= read -r line; do
         printf '%s' "$line" | jq -r '
             .title as $t |
             .plugin as $p |
@@ -136,6 +155,8 @@ history_list() {
 # ═══════════════════════════════════════════════════════════════
 history_delete() {
     local index="$1"
+    # Guard: non-numeric index is an arithmetic error under set -e.
+    [[ "$index" =~ ^[0-9]+$ ]] || return 1
     [[ -f "$HISTORY_FILE" ]] || return 0
 
     local total

@@ -7,7 +7,10 @@
 # ═══════════════════════════════════════════════════════════════
 _log() {
     local level="$1"; shift
-    local msg="$*"
+    # Single-line: titles/URLs from remotes carry newlines that would forge
+    # extra timestamped lines in the log.
+    local msg="${*//$'\n'/ }"
+    msg="${msg//$'\r'/}"
     local ts
     ts=$(date_iso 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S%z")
     printf '[%s] [%s] %s\n' "$ts" "$level" "$msg" >> "$LOG_FILE" 2>/dev/null || true

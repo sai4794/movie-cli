@@ -91,7 +91,12 @@ select_item() {
     shift
     _SELECT_ITEM_RESULT=""
 
-    # Auto-select if --select N is set
+    # Auto-select if --select N is set. N=0 passes the old regex but the
+    # -ge 1 gate then silently IGNORES it and drops into interactive menus —
+    # reject it here so typos fail loudly instead of hanging a scripted run.
+    if [[ -n "${SELECT_N:-}" ]]; then
+        [[ "$SELECT_N" =~ ^[1-9][0-9]*$ ]] || die_user "Invalid --select value: $SELECT_N (must be >= 1)"
+    fi
     if [[ -n "${SELECT_N:-}" ]] && [[ "$SELECT_N" -ge 1 ]] 2>/dev/null; then
         local count=1
         for item in "$@"; do
@@ -101,7 +106,8 @@ select_item() {
             fi
             (( count++ ))
         done
-        die_user "Selection $SELECT_N out of range (max: $count)"
+        # $count is already N+1 here (incremented past the last item).
+        die_user "Selection $SELECT_N out of range (max: $((count - 1)))"
     fi
 
     # Search-only: just print results
@@ -217,39 +223,42 @@ select_stream() {
         return 0
     fi
 
+    # One jq pass builds every label (~7 forks/stream before: ~420 procs
+    # for a 60-stream episode). "<- Back" sentinels pass through as index -1.
     local -a labels=() streams=()
+    local _sl_tmp
+    _sl_tmp=$(mktemp 2>/dev/null || mktemp -t movie_cli_labels) || return 1
+    [[ -n "$_sl_tmp" ]] || return 1
     local stream label
     for stream in "$@"; do
-        # Sentinel passthrough: "<- Back" is not a stream object — keep its
-        # own label instead of jq-mangling it into "Stream".
-        if [[ "$stream" == "<- Back" ]]; then
-            labels+=("<- Back")
-            streams+=("$stream")
-            continue
-        fi
-        label=""
-        local prov qual codec audio lang size hdr
-        prov=$(printf '%s' "$stream" | jq -r '.provider // empty' 2>/dev/null)
-        qual=$(printf '%s' "$stream" | jq -r '.quality // empty' 2>/dev/null)
-        codec=$(printf '%s' "$stream" | jq -r '.codec // empty' 2>/dev/null)
-        audio=$(printf '%s' "$stream" | jq -r '.audio // empty' 2>/dev/null)
-        lang=$(printf '%s' "$stream" | jq -r '.language // empty' 2>/dev/null)
-        size=$(printf '%s' "$stream" | jq -r '.size // empty' 2>/dev/null)
-        hdr=$(printf '%s' "$stream" | jq -r '.hdr // false' 2>/dev/null)
-
-        [[ -n "$prov" ]] && label="${prov}   "
-        [[ -n "$qual" ]] && label="${label}${qual}   "
-        [[ -n "$codec" ]] && label="${label}${codec}   "
-        [[ -n "$audio" ]] && label="${label}${audio}   "
-        [[ -n "$lang" ]] && label="${label}${lang}   "
-        [[ -n "$size" && "$size" != "unknown" ]] && label="${label}${size}"
-        [[ "$hdr" == "true" ]] && label="${label}   HDR"
-
-        label="${label%% }"
-        [[ -z "$label" ]] && label="Stream"
+        # Sentinels are not JSON — jq -R reads every line as a raw STRING so
+        # "<- Back" reaches the `==` test instead of dying as a parse error
+        # (bare `jq` aborts on the sentinel line and drops ALL labels).
+        printf '%s\n' "$stream"
+    done | jq -Rr '
+        (if . == "<- Back" then "-1"
+         else
+            ((fromjson? // {}) as $o
+             # Spacing replicates the legacy builder exactly: each of the
+             # five fields appends value+"   ", size appends bare, HDR
+             # appends "   HDR", then one trailing space is stripped.
+             | ([($o.provider // empty), ($o.quality // empty), ($o.codec // empty),
+                 ($o.audio // empty), ($o.language // empty)]
+                | map(select(. != "") | . + "   ") | add // "")
+               + (if ($o.size // "unknown") != "unknown" then $o.size else "" end)
+               + (if $o.hdr == true then "   HDR" else "" end)
+               | sub(" $"; "")
+               | if . == "" then "Stream" else . end)
+         end)
+    ' 2>/dev/null > "$_sl_tmp" || { rm -f "$_sl_tmp"; return 1; }
+    for stream in "$@"; do
+        IFS= read -r label <&3 || label="Stream"
+        # Restore the sentinel's own label (jq emits -1 for it above).
+        [[ "$label" == "-1" ]] && label="<- Back"
         labels+=("$label")
         streams+=("$stream")
-    done
+    done 3< "$_sl_tmp"
+    rm -f "$_sl_tmp" 2>/dev/null || true
 
     select_item "$prompt" "${labels[@]}" || return 1
     local selected_label="$_SELECT_ITEM_RESULT"
@@ -263,7 +272,9 @@ select_stream() {
         (( i++ ))
     done
 
-    _SELECT_ITEM_RESULT="$1"
+    # No label matched: fail loudly instead of silently playing $1.
+    warn "select_stream: no label matched '$selected_label' — refusing to guess"
+    return 1
 }
 
 # ═══════════════════════════════════════════════════════════════
